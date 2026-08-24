@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KraiPRO Stor</title>
+</head>
+<body>
+  <h1>KraiPRO Stor Inventory</h1>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBtl82M_CFT_fTzuUKHhnC9zablqT1BteY",
+      authDomain: "kraipro-stor.firebaseapp.com",
+      projectId: "kraipro-stor",
+      storageBucket: "kraipro-stor.firebasestorage.app",
+      messagingSenderId: "760657174639",
+      appId: "1:760657174639:web:a4aa7876b5e05526daed9a"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    console.log("Firebase connected successfully!");
+  </script>
+</body>
+</html>
