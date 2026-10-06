@@ -1412,7 +1412,7 @@ function getStockMovements(category, dateFilter) {
   lpoList.forEach(lpo => {
     const tarikh = String(lpo.tarikhTerima || '');
     if (lpo.status !== 'Selesai' || !/^\d{4}-\d{2}/.test(tarikh) || !dateFilter(tarikh)) return;
-    (lpo.items || []).forEach(i => {
+    lpoReceivedLines(lpo).forEach(i => {
       const inv = findInventoryItem(i);
       if ((inv ? inv.kategori : i.kategori) !== category) return;
       const qty = toInt(i.qty);
@@ -3641,35 +3641,327 @@ function submitLpoOrder() {
   showToast(`Pesanan LPO ${lpoNo} berjaya direkodkan!`, 'success');
 }
 
+// ---- KEW.PS-1: Borang Terimaan Barang-Barang (BTB) ----
+const BTB_JENIS_PENERIMAAN = ['Pembelian', 'Kontrak', 'Pindahan', 'Hadiah / Sumbangan', 'Pulangan', 'Lain-lain'];
+const DEFAULT_JABATAN = 'PERKHIDMATAN PERGIGIAN DAERAH KUALA KRAI';
+let btbPendingLpoNo = '';
+
+// Baris yang benar-benar diterima: ikut BTB jika ada, jika tidak ikut kuantiti LPO
+function lpoReceivedLines(lpo) {
+  if (lpo.btb && Array.isArray(lpo.btb.items)) {
+    return lpo.btb.items.map(b => ({ itemId: b.itemId, sku: b.sku, nama: b.nama, unit: b.unit, qty: toInt(b.diterima) }));
+  }
+  return lpo.items || [];
+}
+
+function findPembekal(nama) {
+  return pembekalList.find(p => String(p.nama || '').trim().toLowerCase() === String(nama || '').trim().toLowerCase());
+}
+
 function confirmLpoReceipt(lpoNo) {
   const lpo = lpoList.find(l => l.no === lpoNo);
   if (!lpo || lpo.status === 'Selesai' || !isAdminLoggedIn) return;
+  btbPendingLpoNo = lpoNo;
 
-  showConfirmModal('Sahkan Penerimaan LPO', `Sahkan penerimaan stok untuk LPO ${lpo.no}? Stok fizikal akan ditambah.`, async () => {
-    showLoadingOverlay(`Merekod penerimaan stok LPO ${lpo.no}...`);
-    try {
-      await runStockTransaction(async (tx, fresh) => {
-        const freshLpo = fresh.lpoList.find(l => l.no === lpoNo);
-        if (!freshLpo) throw new Error('LPO tidak dijumpai.');
-        if (freshLpo.status === 'Selesai') throw new Error('Stok bagi LPO ini telah diterima.');
+  const today = todayISODate();
+  const nama = (currentUserProfile && currentUserProfile.nama) || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail);
+  const jawatan = (currentUserProfile && currentUserProfile.jawatan) || '';
+  const jabatan = document.getElementById('kewps14-input-jabatan')?.value || DEFAULT_JABATAN;
+  const pb = findPembekal(lpo.pembekal);
+  const input = 'w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs font-semibold focus:ring-2 focus:ring-emerald-500';
 
-        (freshLpo.items || []).forEach(i => {
-          const invItem = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
-          if (invItem) invItem.baki = (parseInt(invItem.baki) || 0) + (parseInt(i.qty) || 0);
-        });
+  const subtitle = document.getElementById('btb-modal-subtitle');
+  if (subtitle) subtitle.textContent = `LPO ${lpo.no} · ${lpo.pembekal}`;
 
-        freshLpo.status = 'Selesai';
-        freshLpo.tarikhTerima = todayISODate();
+  const rows = (lpo.items || []).map((i, idx) => {
+    const inv = findInventoryItem(i);
+    const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
+    const qty = toInt(i.qty);
+    return `
+      <tr class="border-b border-slate-100" data-idx="${idx}">
+        <td class="p-2 font-black whitespace-nowrap">${escapeHtml(i.sku)}</td>
+        <td class="p-2 font-semibold">${escapeHtml(i.nama)}</td>
+        <td class="p-2 text-center">${escapeHtml(i.unit || (inv && inv.unit) || '')}</td>
+        <td class="p-2 text-center font-bold">${qty}</td>
+        <td class="p-2"><input type="number" min="0" value="${qty}" class="btb-qty-do w-20 text-center ${input}"></td>
+        <td class="p-2"><input type="number" min="0" value="${qty}" data-harga="${harga}" oninput="updateBtbRowTotal(this)" class="btb-qty-terima w-20 text-center ${input} bg-emerald-50 border-emerald-300"></td>
+        <td class="p-2 text-right whitespace-nowrap">${formatRM(harga)}</td>
+        <td class="p-2 text-right font-bold whitespace-nowrap btb-row-total">${formatRM(harga * qty)}</td>
+        <td class="p-2"><input type="text" class="btb-catatan w-32 ${input}" placeholder="-"></td>
+      </tr>`;
+  }).join('');
+
+  const body = document.getElementById('btb-modal-body');
+  body.innerHTML = `
+    <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+      <div><span class="text-slate-500 font-bold block">Pembekal</span><b>${escapeHtml(lpo.pembekal)}</b>${pb && pb.alamat ? `<span class="block text-slate-500">${escapeHtml(pb.alamat)}</span>` : ''}</div>
+      <div><span class="text-slate-500 font-bold block">Pesanan Kerajaan (PK) / LPO</span><b>${escapeHtml(lpo.no)}</b> · ${escapeHtml(lpo.tarikh)}</div>
+      <div><span class="text-slate-500 font-bold block">No. Rujukan BTB</span><b class="text-emerald-700">Dijana automatik semasa disahkan</b></div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div>
+        <label class="block font-bold text-slate-700 mb-1">Jenis Penerimaan <span class="text-rose-500">*</span></label>
+        <select id="btb-jenis" class="${input}">${BTB_JENIS_PENERIMAAN.map(j => `<option value="${escapeHtml(j)}">${escapeHtml(j)}</option>`).join('')}</select>
+      </div>
+      <div>
+        <label class="block font-bold text-slate-700 mb-1">No. Nota Hantaran (DO)</label>
+        <input type="text" id="btb-do-no" class="${input}" placeholder="Cth: DO-12345">
+      </div>
+      <div>
+        <label class="block font-bold text-slate-700 mb-1">Tarikh Nota Hantaran</label>
+        <input type="date" id="btb-do-tarikh" value="${today}" class="${input}">
+      </div>
+      <div>
+        <label class="block font-bold text-slate-700 mb-1">Tarikh Terima <span class="text-rose-500">*</span></label>
+        <input type="date" id="btb-tarikh-terima" value="${today}" max="${today}" class="${input}">
+      </div>
+      <div class="sm:col-span-2 lg:col-span-4">
+        <label class="block font-bold text-slate-700 mb-1">Maklumat Pengangkutan</label>
+        <input type="text" id="btb-pengangkutan" class="${input}" placeholder="Cth: Lori syarikat (No. Pend. ABC 1234) / Pos Laju / Diambil sendiri">
+      </div>
+    </div>
+
+    <div class="overflow-x-auto border border-slate-200 rounded-2xl">
+      <table class="w-full min-w-[820px] text-left border-collapse">
+        <thead class="bg-slate-900 text-amber-400 font-bold uppercase text-[10px]">
+          <tr>
+            <th class="p-2">No. Kod</th><th class="p-2">Perihal Barang</th><th class="p-2 text-center">Unit</th>
+            <th class="p-2 text-center">Dipesan (PK)</th><th class="p-2 text-center">Nota Hantaran (DO)</th><th class="p-2 text-center">Diterima</th>
+            <th class="p-2 text-right">Seunit (RM)</th><th class="p-2 text-right">Jumlah (RM)</th><th class="p-2">Catatan</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="text-[11px] text-slate-500 -mt-3"><i class="fa-solid fa-circle-info mr-1"></i> Stok akan ditambah mengikut kuantiti <b>Diterima</b>. Jika kurang daripada dipesan, nyatakan sebab dalam Catatan.</p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="border border-slate-200 rounded-2xl p-3 space-y-2">
+        <p class="font-extrabold text-slate-800">Pegawai Penerima <span class="text-rose-500">*</span></p>
+        <input type="text" id="btb-penerima-nama" value="${escapeHtml(nama)}" class="${input}" placeholder="Nama">
+        <input type="text" id="btb-penerima-jawatan" value="${escapeHtml(jawatan)}" class="${input}" placeholder="Jawatan">
+        <input type="text" id="btb-penerima-jabatan" value="${escapeHtml(jabatan)}" class="${input}" placeholder="Jabatan">
+      </div>
+      <div class="border border-slate-200 rounded-2xl p-3 space-y-2">
+        <p class="font-extrabold text-slate-800">Pegawai Teknikal <span class="text-slate-400 font-semibold">(jika perlu)</span></p>
+        <input type="text" id="btb-teknikal-nama" class="${input}" placeholder="Nama">
+        <input type="text" id="btb-teknikal-jawatan" class="${input}" placeholder="Jawatan">
+        <input type="text" id="btb-teknikal-jabatan" class="${input}" placeholder="Jabatan">
+      </div>
+    </div>`;
+
+  document.getElementById('btb-modal')?.classList.remove('hidden');
+}
+
+function updateBtbRowTotal(input) {
+  const row = input.closest('tr');
+  const harga = parseFloat(input.dataset.harga) || 0;
+  const cell = row && row.querySelector('.btb-row-total');
+  if (cell) cell.textContent = formatRM(harga * Math.max(0, toInt(input.value)));
+}
+
+function closeBtbModal() {
+  document.getElementById('btb-modal')?.classList.add('hidden');
+  btbPendingLpoNo = '';
+}
+
+async function confirmBtbReceipt() {
+  const lpoNo = btbPendingLpoNo;
+  const lpo = lpoList.find(l => l.no === lpoNo);
+  if (!lpo || !isAdminLoggedIn) return;
+
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const tarikhTerima = val('btb-tarikh-terima');
+  const penerimaNama = val('btb-penerima-nama');
+
+  const lines = [...document.querySelectorAll('#btb-modal-body tbody tr')].map(tr => {
+    const i = lpo.items[parseInt(tr.dataset.idx)];
+    return {
+      itemId: i.itemId, sku: i.sku, nama: i.nama, unit: i.unit || '',
+      dipesan: toInt(i.qty),
+      qtyDO: Math.max(0, toInt(tr.querySelector('.btb-qty-do').value)),
+      diterima: Math.max(0, toInt(tr.querySelector('.btb-qty-terima').value)),
+      catatan: tr.querySelector('.btb-catatan').value.trim()
+    };
+  });
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tarikhTerima)) { showToast('Sila isi Tarikh Terima.', 'error'); return; }
+  if (!penerimaNama) { showToast('Sila isi nama Pegawai Penerima.', 'error'); return; }
+  if (!lines.some(l => l.diterima > 0)) { showToast('Sekurang-kurangnya satu item mesti mempunyai kuantiti diterima.', 'error'); return; }
+  const shortNoNote = lines.find(l => l.diterima < l.dipesan && !l.catatan);
+  if (shortNoNote) { showToast(`Kuantiti diterima ${shortNoNote.sku} kurang daripada dipesan. Sila nyatakan sebab dalam Catatan.`, 'error'); return; }
+
+  const pb = findPembekal(lpo.pembekal);
+  const teknikalNama = val('btb-teknikal-nama');
+  const btbBase = {
+    jenis: val('btb-jenis') || BTB_JENIS_PENERIMAAN[0],
+    pkNo: lpo.no,
+    pkTarikh: lpo.tarikh || '',
+    doNo: val('btb-do-no'),
+    doTarikh: val('btb-do-tarikh'),
+    tarikhTerima,
+    pengangkutan: val('btb-pengangkutan'),
+    pembekalNama: lpo.pembekal || '',
+    pembekalAlamat: (pb && pb.alamat) || '',
+    penerima: { nama: penerimaNama, jawatan: val('btb-penerima-jawatan'), jabatan: val('btb-penerima-jabatan'), tarikh: tarikhTerima },
+    teknikal: teknikalNama ? { nama: teknikalNama, jawatan: val('btb-teknikal-jawatan'), jabatan: val('btb-teknikal-jabatan'), tarikh: tarikhTerima } : null,
+    direkodOleh: currentUserEmail,
+    direkodPada: new Date().toISOString()
+  };
+
+  closeBtbModal();
+  showLoadingOverlay(`Merekod penerimaan stok LPO ${lpo.no}...`);
+  let btbNo = '';
+  try {
+    const year = tarikhTerima.slice(0, 4);
+    const counterRef = db.collection('kraipro_counters').doc(`btb_${year}`);
+
+    await runStockTransaction(async (tx, fresh) => {
+      const counterSnap = await tx.get(counterRef);
+      const seq = counterSnap.exists ? (counterSnap.data().seq || 0) + 1 : 1;
+      btbNo = `BTB-${year}-${String(seq).padStart(3, '0')}`;
+
+      const freshLpo = fresh.lpoList.find(l => l.no === lpoNo);
+      if (!freshLpo) throw new Error('LPO tidak dijumpai.');
+      if (freshLpo.status === 'Selesai') throw new Error('Stok bagi LPO ini telah diterima.');
+
+      // Harga direkod pada tarikh terima (untuk rekod KEW.PS-1)
+      const btbItems = lines.map(l => {
+        const inv = fresh.items.find(it => String(it.id) === String(l.itemId) || it.sku === l.sku);
+        const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
+        if (inv) inv.baki = (parseInt(inv.baki) || 0) + l.diterima;
+        return { ...l, unit: l.unit || (inv && inv.unit) || '', harga, jumlah: Math.round(harga * l.diterima * 100) / 100 };
       });
 
-      addAuditLog("Penerimaan LPO", `Penerimaan stok bagi LPO ${lpo.no} disahkan.`);
-      showToast(`Stok bagi ${lpo.no} berjaya diterima & ditambah ke baki fizikal!`, 'success');
-    } catch (err) {
-      showToast('Penerimaan LPO gagal: ' + authErrorMessage(err), 'error');
-    } finally {
-      hideLoadingOverlay();
-    }
-  });
+      freshLpo.status = 'Selesai';
+      freshLpo.tarikhTerima = tarikhTerima;
+      freshLpo.btb = { ...btbBase, no: btbNo, items: btbItems };
+      tx.set(counterRef, { seq });
+    });
+
+    const totalDiterima = lines.reduce((s, l) => s + l.diterima, 0);
+    addAuditLog("Penerimaan LPO", `Penerimaan stok LPO ${lpo.no} disahkan (${btbNo}, ${totalDiterima} unit diterima).`);
+    showToast(`Stok ${lpo.no} diterima. KEW.PS-1 ${btbNo} dijana.`, 'success');
+    setTimeout(() => previewKewPs1(lpoNo), 600); // tunggu data dikemas kini
+  } catch (err) {
+    showToast('Penerimaan LPO gagal: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay();
+  }
+}
+
+// Pratonton & cetak KEW.PS-1 (format AM 6.2 Lampiran A)
+function previewKewPs1(lpoNo) {
+  const lpo = lpoList.find(l => l.no === lpoNo);
+  const content = document.getElementById('kewps8-content');
+  if (!lpo || !content) return;
+
+  // LPO lama tanpa rekod BTB: bina daripada data LPO (medan yang tiada dibiarkan kosong)
+  const b = lpo.btb || {
+    no: '', jenis: '', pkNo: lpo.no, pkTarikh: lpo.tarikh || '', doNo: '', doTarikh: '', tarikhTerima: lpo.tarikhTerima || '',
+    pengangkutan: '', pembekalNama: lpo.pembekal || '', pembekalAlamat: (findPembekal(lpo.pembekal) || {}).alamat || '',
+    penerima: null, teknikal: null,
+    items: (lpo.items || []).map(i => {
+      const inv = findInventoryItem(i);
+      const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
+      return { sku: i.sku, nama: i.nama, unit: i.unit, dipesan: toInt(i.qty), qtyDO: '', diterima: toInt(i.qty), harga, jumlah: harga * toInt(i.qty), catatan: '' };
+    })
+  };
+
+  const dash = '…………………………………';
+  const cell = 'border border-slate-900 p-1.5';
+  const head = 'border border-slate-900 p-1.5 bg-slate-100 font-bold text-center';
+  const fmtDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d).split('-').reverse().join('/') : (d || '');
+  const sign = (title, p, note) => `
+    <div class="p-3 space-y-0.5 ${note ? '' : 'border-r border-slate-900'}">
+      <div class="h-10"></div>
+      <p>${dash}</p>
+      <p>(${title})</p>
+      <p><b>Nama:</b> ${escapeHtml((p && p.nama) || '')}</p>
+      <p><b>Jawatan:</b> ${escapeHtml((p && p.jawatan) || '')}</p>
+      <p><b>Jabatan:</b> ${escapeHtml((p && p.jabatan) || '')}</p>
+      <p><b>Tarikh:</b> ${escapeHtml(fmtDate(p && p.tarikh))}</p>
+      ${note ? '<p class="italic">* Jika Perlu.</p>' : ''}
+    </div>`;
+
+  const itemRows = (b.items || []).map(i => `
+    <tr>
+      <td class="${cell} text-center font-bold">${escapeHtml(i.sku)}</td>
+      <td class="${cell}">${escapeHtml(i.nama)}</td>
+      <td class="${cell} text-center">${escapeHtml(i.unit || '')}</td>
+      <td class="${cell} text-center">${i.dipesan === '' ? '' : toInt(i.dipesan)}</td>
+      <td class="${cell} text-center">${i.qtyDO === '' ? '' : toInt(i.qtyDO)}</td>
+      <td class="${cell} text-center font-bold">${toInt(i.diterima)}</td>
+      <td class="${cell} text-right">${formatRM(i.harga)}</td>
+      <td class="${cell} text-right font-bold">${formatRM(i.jumlah)}</td>
+      <td class="${cell}">${escapeHtml(i.catatan || '')}</td>
+    </tr>`).join('');
+  const total = (b.items || []).reduce((s, i) => s + (Number(i.jumlah) || 0), 0);
+
+  content.innerHTML = `
+    <div class="font-sans text-slate-900 text-[11px] space-y-4 max-w-[280mm] mx-auto">
+      <div class="flex justify-between">
+        <p>Pekeliling Perbendaharaan Malaysia</p>
+        <p>AM 6.2 Lampiran A</p>
+      </div>
+      <p class="text-right font-black text-xs">KEW.PS-1</p>
+      <p class="text-right">No. Rujukan BTB: <b>${escapeHtml(b.no || dash)}</b></p>
+      <h2 class="text-center font-black text-sm">BORANG TERIMAAN BARANG-BARANG (BTB)</h2>
+
+      <table class="w-full border-collapse">
+        <tr>
+          <th rowspan="2" class="${head}">Nama dan Alamat Pembekal/<br>Agen Penghantaran/ Pemberi</th>
+          <th rowspan="2" class="${head}">Jenis<br>Penerimaan*</th>
+          <th colspan="2" class="${head}">Pesanan Kerajaan (PK)/ Kontrak/ Surat Kelulusan</th>
+          <th colspan="2" class="${head}">Nota Hantaran (DO)</th>
+          <th rowspan="2" class="${head}">Maklumat Pengangkutan</th>
+        </tr>
+        <tr>
+          <th class="${head}">Nombor/ Rujukan</th><th class="${head}">Tarikh</th>
+          <th class="${head}">Nombor</th><th class="${head}">Tarikh</th>
+        </tr>
+        <tr>
+          <td class="${cell}"><b>${escapeHtml(b.pembekalNama)}</b>${b.pembekalAlamat ? `<br>${escapeHtml(b.pembekalAlamat)}` : ''}</td>
+          <td class="${cell} text-center">${escapeHtml(b.jenis || '')}</td>
+          <td class="${cell} text-center">${escapeHtml(b.pkNo || '')}</td>
+          <td class="${cell} text-center">${escapeHtml(fmtDate(b.pkTarikh))}</td>
+          <td class="${cell} text-center">${escapeHtml(b.doNo || '')}</td>
+          <td class="${cell} text-center">${escapeHtml(b.doNo ? fmtDate(b.doTarikh) : '')}</td>
+          <td class="${cell}">${escapeHtml(b.pengangkutan || '')}</td>
+        </tr>
+      </table>
+
+      <table class="w-full border-collapse">
+        <tr>
+          <th rowspan="2" class="${head}">No. Kod</th>
+          <th rowspan="2" class="${head}">Perihal<br>Barang-Barang</th>
+          <th rowspan="2" class="${head}">Unit<br>Pengukuran</th>
+          <th colspan="3" class="${head}">Kuantiti</th>
+          <th colspan="2" class="${head}">Harga (RM)</th>
+          <th rowspan="2" class="${head}">Catatan</th>
+        </tr>
+        <tr>
+          <th class="${head}">Dipesan<br>(PK)</th><th class="${head}">Nota Hantaran<br>(DO)</th><th class="${head}">Diterima</th>
+          <th class="${head}">Seunit</th><th class="${head}">Jumlah</th>
+        </tr>
+        ${itemRows}
+        <tr>
+          <td colspan="7" class="${cell} text-right font-bold">JUMLAH</td>
+          <td class="${cell} text-right font-black">${formatRM(total)}</td>
+          <td class="${cell}"></td>
+        </tr>
+      </table>
+
+      <div class="grid grid-cols-2 border border-slate-900">
+        ${sign('Tandatangan Pegawai Penerima', b.penerima, false)}
+        ${sign('*Tandatangan Pegawai Teknikal', b.teknikal, true)}
+      </div>
+      ${lpo.btb ? '' : '<p class="text-[10px] text-amber-700 no-print">Nota: LPO ini diterima sebelum KEW.PS-1 diperkenalkan. Medan yang tiada dalam rekod dibiarkan kosong untuk diisi secara manual.</p>'}
+    </div>`;
+
+  const modal = document.getElementById('kewps8-modal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function renderMasterLpoTable() {
@@ -3688,7 +3980,10 @@ function renderMasterLpoTable() {
       : `<span class="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-lg text-[10px] font-black uppercase"><i class="fa-solid fa-clock mr-1"></i> Dalam Proses</span>`;
 
     const actionBtn = isCompleted
-      ? `<span class="text-[10px] text-slate-500 font-bold"><i class="fa-solid fa-calendar-check mr-1 text-emerald-600"></i> Diterima (${escapeHtml(l.tarikhTerima || l.tarikh)})</span>`
+      ? `<div class="flex flex-col items-center gap-1">
+           <span class="text-[10px] text-slate-500 font-bold"><i class="fa-solid fa-calendar-check mr-1 text-emerald-600"></i> Diterima (${escapeHtml(l.tarikhTerima || l.tarikh)})</span>
+           <button type="button" data-no="${escapeHtml(l.no)}" onclick="previewKewPs1(this.dataset.no)" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg shadow whitespace-nowrap"><i class="fa-solid fa-file-pdf mr-1"></i> KEW.PS-1${l.btb && l.btb.no ? ` · ${escapeHtml(l.btb.no)}` : ''}</button>
+         </div>`
       : `<button type="button" data-no="${escapeHtml(l.no)}" onclick="confirmLpoReceipt(this.dataset.no)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl transition shadow"><i class="fa-solid fa-box-open mr-1"></i> Sah Terima</button>`;
 
     return `
