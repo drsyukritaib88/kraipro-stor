@@ -65,6 +65,9 @@
         display: none !important;
       }
     }
+    /* Tab: ikon guna warna aksen setiap tab; ikut warna teks apabila aktif */
+    .tab-pill .tab-icon { color: var(--tab-accent, #7c3aed); transition: color .2s ease; }
+    .tab-pill.is-active .tab-icon { color: inherit; }
   </style>
 </head>
 <body class="text-slate-800 antialiased min-h-screen flex flex-col">
@@ -98,11 +101,21 @@
         </div>
         <div>
           <label class="block text-xs font-bold text-slate-700 mb-1">Kata Laluan</label>
-          <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+          <div class="relative">
+            <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 pr-11 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+            <button type="button" onclick="togglePasswordVisibility('auth-password', this)" aria-label="Tunjuk kata laluan" title="Tunjuk kata laluan" class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-400 hover:text-purple-700 focus:outline-none focus:text-purple-700 transition">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
         </div>
         <div id="auth-password2-wrap" class="hidden">
           <label class="block text-xs font-bold text-slate-700 mb-1">Sahkan Kata Laluan</label>
-          <input type="password" id="auth-password2" autocomplete="new-password" minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+          <div class="relative">
+            <input type="password" id="auth-password2" autocomplete="new-password" minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 pr-11 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+            <button type="button" onclick="togglePasswordVisibility('auth-password2', this)" aria-label="Tunjuk kata laluan" title="Tunjuk kata laluan" class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-400 hover:text-purple-700 focus:outline-none focus:text-purple-700 transition">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
           <p class="text-[11px] text-slate-500 mt-1">Minimum 8 aksara. E-mel anda mesti telah didaftarkan oleh SuperAdmin.</p>
         </div>
         <div class="flex items-center justify-between pt-1">
@@ -178,16 +191,16 @@
             </div>
 
             <!-- Navigation Tabs Utama -->
-            <nav class="grid grid-cols-3 gap-1.5 sm:flex sm:gap-2 mt-2">
-              <button type="button" id="main-tab-dashboard" onclick="switchTab('dashboard')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all shadow-md bg-slate-900 text-amber-400 ring-2 ring-amber-500/50">
+            <nav class="grid grid-cols-3 gap-2 sm:flex sm:gap-3 mt-3">
+              <button type="button" id="main-tab-dashboard" onclick="switchTab('dashboard')" class="main-tab-btn">
                 <i class="fa-solid fa-chart-pie"></i>
                 <span class="truncate">Dashboard</span>
               </button>
-              <button type="button" id="main-tab-pemohon" onclick="switchTab('pemohon')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold text-purple-200 hover:bg-slate-800/80 hover:text-white transition-all">
+              <button type="button" id="main-tab-pemohon" onclick="switchTab('pemohon')" class="main-tab-btn">
                 <i class="fa-solid fa-paper-plane"></i>
                 <span class="truncate">Permohonan</span>
               </button>
-              <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold text-purple-200 hover:bg-slate-800/80 hover:text-white transition-all relative">
+              <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn">
                 <i class="fa-solid fa-user-shield"></i>
                 <span class="truncate">Pentadbir</span>
                 <span id="main-tab-admin-badge" class="hidden bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full animate-pulse shadow ml-0.5">0</span>
@@ -205,11 +218,6 @@
 
     <!-- SEKSYEN 1: DASHBOARD -->
     <section id="content-dashboard" class="space-y-6">
-      <div class="bg-white p-3 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col sm:flex-row sm:items-center gap-2">
-        <span class="text-xs font-extrabold text-slate-600 whitespace-nowrap"><i class="fa-solid fa-filter text-purple-600 mr-1"></i> Tapis Kategori:</span>
-        <div id="dashboard-cat-tabs" class="flex flex-wrap gap-1.5"></div>
-      </div>
-
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
           <div class="p-3.5 bg-blue-50 text-blue-600 rounded-xl">
@@ -366,6 +374,12 @@
         </div>
       </div>
 
+      <!-- Penapis kategori dashboard -->
+      <div class="bg-white p-3 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col sm:flex-row sm:items-center gap-2">
+        <span class="text-xs font-extrabold text-slate-600 whitespace-nowrap"><i class="fa-solid fa-filter text-purple-600 mr-1"></i> Tapis Kategori:</span>
+        <div id="dashboard-cat-tabs" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
       <!-- Jadual Baki Stok Ringkas -->
       <div class="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
         <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -501,19 +515,19 @@
             <h4 class="text-xs font-bold uppercase text-slate-700 tracking-wider">Pilih Kategori & Item Permohonan</h4>
             
             <div class="flex flex-wrap gap-1.5 overflow-x-auto">
-              <button type="button" id="req-subtab-all" onclick="switchReqCategoryTab('all')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow">
+              <button type="button" id="req-subtab-all" onclick="switchReqCategoryTab('all')" class="req-cat-subtab">
                 Semua Item
               </button>
-              <button type="button" id="req-subtab-pergigian" onclick="switchReqCategoryTab('pergigian')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+              <button type="button" id="req-subtab-pergigian" onclick="switchReqCategoryTab('pergigian')" class="req-cat-subtab">
                 🦷 Bahan Pergigian
               </button>
-              <button type="button" id="req-subtab-alat_tulis" onclick="switchReqCategoryTab('alat_tulis')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+              <button type="button" id="req-subtab-alat_tulis" onclick="switchReqCategoryTab('alat_tulis')" class="req-cat-subtab">
                 ✏️ Alat Tulis
               </button>
-              <button type="button" id="req-subtab-bekalan_am" onclick="switchReqCategoryTab('bekalan_am')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+              <button type="button" id="req-subtab-bekalan_am" onclick="switchReqCategoryTab('bekalan_am')" class="req-cat-subtab">
                 📦 Bekalan Am
               </button>
-              <button type="button" id="req-subtab-promosi" onclick="switchReqCategoryTab('promosi')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+              <button type="button" id="req-subtab-promosi" onclick="switchReqCategoryTab('promosi')" class="req-cat-subtab">
                 📣 Bahan Promosi
               </button>
             </div>
@@ -650,47 +664,47 @@
         </div>
 
         <!-- Subtabs Navigation (Refactored to Flex-Wrap for 1-Page No Horizontal Scroll) -->
-        <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-200/80 flex flex-wrap gap-2">
-          <button type="button" id="admin-subtab-kelulusan" onclick="switchAdminTab('kelulusan')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-900 text-white shadow-md flex items-center gap-1.5">
-            <i class="fa-solid fa-clipboard-check"></i>
+        <div class="bg-white p-3 rounded-3xl shadow-sm border border-slate-200/80 grid grid-cols-2 sm:flex sm:flex-wrap gap-2.5">
+          <button type="button" id="admin-subtab-kelulusan" onclick="switchAdminTab('kelulusan')" class="admin-subtab-btn" style="--tab-accent: #059669">
+            <i class="fa-solid fa-clipboard-check tab-icon"></i>
             <span>Kelulusan Permohonan</span>
             <span id="badge-admin-pending-req" class="hidden bg-amber-400 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
           </button>
 
-          <button type="button" id="admin-subtab-katalog" onclick="switchAdminTab('katalog')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-boxes-packing"></i>
+          <button type="button" id="admin-subtab-katalog" onclick="switchAdminTab('katalog')" class="admin-subtab-btn" style="--tab-accent: #7c3aed">
+            <i class="fa-solid fa-boxes-packing tab-icon"></i>
             <span>1. Stok Induk</span>
           </button>
 
-          <button type="button" id="admin-subtab-reorder" onclick="switchAdminTab('reorder')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-triangle-exclamation"></i>
+          <button type="button" id="admin-subtab-reorder" onclick="switchAdminTab('reorder')" class="admin-subtab-btn" style="--tab-accent: #e11d48">
+            <i class="fa-solid fa-triangle-exclamation tab-icon"></i>
             <span>2. Senarai Perlu Reorder</span>
             <span id="badge-admin-low-stock" class="hidden bg-rose-500 text-white font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
           </button>
 
-          <button type="button" id="admin-subtab-pelulus" onclick="switchAdminTab('pelulus')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-users-gear"></i>
+          <button type="button" id="admin-subtab-pelulus" onclick="switchAdminTab('pelulus')" class="admin-subtab-btn" style="--tab-accent: #4f46e5">
+            <i class="fa-solid fa-users-gear tab-icon"></i>
             <span>Pengurusan Pengguna</span>
           </button>
 
-          <button type="button" id="admin-subtab-lpo" onclick="switchAdminTab('lpo')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-cart-flatbed"></i>
+          <button type="button" id="admin-subtab-lpo" onclick="switchAdminTab('lpo')" class="admin-subtab-btn" style="--tab-accent: #2563eb">
+            <i class="fa-solid fa-cart-flatbed tab-icon"></i>
             <span>Pesanan LPO</span>
             <span id="badge-admin-pending-lpo" class="hidden bg-blue-500 text-white font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
           </button>
 
-          <button type="button" id="admin-subtab-pembekal" onclick="switchAdminTab('pembekal')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-truck-field"></i>
+          <button type="button" id="admin-subtab-pembekal" onclick="switchAdminTab('pembekal')" class="admin-subtab-btn" style="--tab-accent: #d97706">
+            <i class="fa-solid fa-truck-field tab-icon"></i>
             <span>Direktori Pembekal</span>
           </button>
 
-          <button type="button" id="admin-subtab-laporan" onclick="switchAdminTab('laporan')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-file-invoice-dollar"></i>
+          <button type="button" id="admin-subtab-laporan" onclick="switchAdminTab('laporan')" class="admin-subtab-btn" style="--tab-accent: #0d9488">
+            <i class="fa-solid fa-file-invoice-dollar tab-icon"></i>
             <span>Laporan & KEW.PS-14</span>
           </button>
 
-          <button type="button" id="admin-subtab-audit" onclick="switchAdminTab('audit')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
-            <i class="fa-solid fa-clock-rotate-left"></i>
+          <button type="button" id="admin-subtab-audit" onclick="switchAdminTab('audit')" class="admin-subtab-btn" style="--tab-accent: #64748b">
+            <i class="fa-solid fa-clock-rotate-left tab-icon"></i>
             <span>Jejak Audit</span>
           </button>
         </div>
@@ -704,11 +718,11 @@
               </h3>
 
               <div class="flex flex-wrap gap-1.5 overflow-x-auto">
-                <button type="button" id="approval-subtab-all" onclick="switchApprovalCategoryTab('all')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow">Semua</button>
-                <button type="button" id="approval-subtab-pergigian" onclick="switchApprovalCategoryTab('pergigian')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">🦷 Pergigian</button>
-                <button type="button" id="approval-subtab-alat_tulis" onclick="switchApprovalCategoryTab('alat_tulis')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">✏️ Alat Tulis</button>
-                <button type="button" id="approval-subtab-bekalan_am" onclick="switchApprovalCategoryTab('bekalan_am')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">📦 Bekalan Am</button>
-                <button type="button" id="approval-subtab-promosi" onclick="switchApprovalCategoryTab('promosi')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">📣 Promosi</button>
+                <button type="button" id="approval-subtab-all" onclick="switchApprovalCategoryTab('all')" class="approval-cat-subtab">Semua</button>
+                <button type="button" id="approval-subtab-pergigian" onclick="switchApprovalCategoryTab('pergigian')" class="approval-cat-subtab">🦷 Pergigian</button>
+                <button type="button" id="approval-subtab-alat_tulis" onclick="switchApprovalCategoryTab('alat_tulis')" class="approval-cat-subtab">✏️ Alat Tulis</button>
+                <button type="button" id="approval-subtab-bekalan_am" onclick="switchApprovalCategoryTab('bekalan_am')" class="approval-cat-subtab">📦 Bekalan Am</button>
+                <button type="button" id="approval-subtab-promosi" onclick="switchApprovalCategoryTab('promosi')" class="approval-cat-subtab">📣 Promosi</button>
               </div>
             </div>
 
@@ -1216,7 +1230,30 @@
         </div>
 
         <!-- ADMIN SUBTAB: JEJAK AUDIT -->
-        <div id="admin-sec-audit" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+        <div id="admin-sec-audit" class="hidden space-y-6">
+        <!-- SANDARAN & PEMULIHAN DATA (SuperAdmin sahaja) -->
+        <div id="backup-card" class="hidden bg-white p-6 rounded-2xl shadow-sm border-2 border-emerald-200 space-y-4">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-shield-halved text-emerald-600"></i> Sandaran &amp; Pemulihan Data
+              </h3>
+              <p class="text-xs text-slate-500">Satu fail mengandungi semua data: stok, pembekal, LPO, permohonan, pengguna dan log audit. Simpan di Google Drive atau pendrive.</p>
+              <p id="backup-last-text" class="text-[11px] font-bold mt-1"></p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" onclick="downloadFullBackup()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow flex items-center gap-1.5 whitespace-nowrap">
+                <i class="fa-solid fa-download"></i> Muat Turun Sandaran Penuh
+              </button>
+              <label class="bg-white border-2 border-rose-300 hover:bg-rose-50 text-rose-700 font-extrabold text-xs px-4 py-2 rounded-xl transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+                <i class="fa-solid fa-clock-rotate-left"></i> Pulihkan daripada Sandaran
+                <input type="file" id="restore-file-input" accept=".json,application/json" onchange="onRestoreFileSelected(event)" class="hidden">
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
           <div class="flex items-center justify-between border-b border-slate-100 pb-3">
             <div>
               <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
@@ -1248,6 +1285,7 @@
               </tbody>
             </table>
           </div>
+        </div>
         </div>
 
       </div>
@@ -1529,6 +1567,42 @@
       <div class="flex items-center gap-3 border-t border-slate-100 p-5">
         <button type="button" onclick="closeSplitCategoryModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
         <button type="button" id="split-cat-save-btn" onclick="saveSplitCategories()" class="flex-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Simpan Pengkategorian</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PENGESAHAN PEMULIHAN DATA -->
+  <div id="restore-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border-2 border-rose-300 max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h3 class="text-base font-black text-rose-800"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Pulihkan Data daripada Sandaran</h3>
+          <p id="restore-file-info" class="text-xs text-slate-500 mt-0.5"></p>
+        </div>
+        <button type="button" onclick="closeRestoreModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+
+      <table class="w-full text-xs border border-slate-200 rounded-xl overflow-hidden">
+        <thead class="bg-slate-100 font-bold text-[10px] uppercase">
+          <tr><th class="p-2 text-left">Data</th><th class="p-2 text-right">Dalam Sandaran</th><th class="p-2 text-right">Sekarang</th></tr>
+        </thead>
+        <tbody id="restore-summary-body" class="divide-y divide-slate-100"></tbody>
+      </table>
+
+      <div class="bg-rose-50 border border-rose-200 rounded-xl p-3 text-[11px] text-rose-900 font-semibold space-y-1">
+        <p><b>Data sekarang akan DIGANTIKAN</b> dengan data dalam fail sandaran (stok, pembekal, LPO, permohonan, pengguna).</p>
+        <p>• Sandaran data semasa akan dimuat turun secara automatik dahulu, sekiranya perlu dikembalikan.</p>
+        <p>• Log audit sedia ada <b>tidak dipadam</b>; log dari sandaran yang tiada akan ditambah.</p>
+      </div>
+
+      <div>
+        <label class="block text-xs font-bold text-slate-700 mb-1">Taip <b class="text-rose-700">PULIHKAN</b> untuk mengesahkan:</label>
+        <input type="text" id="restore-confirm-input" oninput="onRestoreConfirmInput()" autocomplete="off" class="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-sm font-black tracking-widest focus:ring-2 focus:ring-rose-500">
+      </div>
+
+      <div class="flex items-center gap-3 pt-1">
+        <button type="button" onclick="closeRestoreModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" id="restore-confirm-btn" onclick="confirmRestoreBackup()" disabled class="flex-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Pulihkan Data</button>
       </div>
     </div>
   </div>

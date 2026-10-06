@@ -456,6 +456,242 @@ function clearAuditTrailLogs() {
 
 
 // ------------------------------------------
+// 3b. SANDARAN PENUH & PEMULIHAN DATA (SUPERADMIN)
+// ------------------------------------------
+const BACKUP_FORMAT = 'kraipro-stor-backup';
+const BACKUP_VERSION = 1;
+const LAST_BACKUP_KEY = 'kraipro_sandaran_terakhir';
+let pendingRestore = null;
+
+// Baca SEMUA data terus dari Firestore (bukan salinan dalam pelayar)
+async function collectFullBackup() {
+  const docsOf = async (name) => (await db.collection(name).get()).docs.map(d => ({ id: d.id, ...d.data() }));
+  const stateSnap = await stateDocRef().get();
+  const [requestsAll, usersAll, auditAll, countersAll] = await Promise.all([
+    docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters')
+  ]);
+  const state = stateSnap.exists ? stateSnap.data() : { items: [], pembekalList: [], lpoList: [] };
+
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    createdAt: new Date().toISOString(),
+    createdBy: currentUserEmail,
+    projectId: (firebase.app().options || {}).projectId || '',
+    counts: backupCounts({ state, requests: requestsAll, users: usersAll, audit: auditAll }),
+    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll }
+  };
+}
+
+function backupCounts(d) {
+  return {
+    items: (d.state.items || []).length,
+    pembekal: (d.state.pembekalList || []).length,
+    lpo: (d.state.lpoList || []).length,
+    requests: d.requests.length,
+    users: d.users.length,
+    audit: d.audit.length
+  };
+}
+
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function backupFilename(prefix) {
+  const now = new Date();
+  const stamp = `${todayISODate()}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  return `${prefix}_${stamp}.json`;
+}
+
+function updateBackupReminder() {
+  const el = document.getElementById('backup-last-text');
+  if (!el) return;
+  let last = null;
+  try { last = localStorage.getItem(LAST_BACKUP_KEY); } catch (e) {}
+  if (!last) {
+    el.className = 'text-[11px] font-bold mt-1 text-amber-700';
+    el.textContent = '⚠ Belum ada sandaran dimuat turun dari peranti ini.';
+    return;
+  }
+  const days = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
+  const when = new Date(last).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+  el.className = `text-[11px] font-bold mt-1 ${days >= 7 ? 'text-amber-700' : 'text-emerald-700'}`;
+  el.textContent = `${days >= 7 ? '⚠ ' : '✓ '}Sandaran terakhir dari peranti ini: ${when} (${days} hari lalu)${days >= 7 ? '. Disyorkan buat sandaran baharu.' : ''}`;
+}
+
+async function downloadFullBackup() {
+  if (currentUserRole !== 'superadmin') return;
+  showLoadingOverlay('Menyediakan sandaran penuh...');
+  try {
+    const backup = await collectFullBackup();
+    downloadJson(backup, backupFilename('KraiPRO_Sandaran'));
+    try { localStorage.setItem(LAST_BACKUP_KEY, backup.createdAt); } catch (e) {}
+    updateBackupReminder();
+    const c = backup.counts;
+    addAuditLog('Sandaran Data', `Sandaran penuh dimuat turun: ${c.items} item, ${c.requests} permohonan, ${c.lpo} LPO, ${c.pembekal} pembekal, ${c.users} pengguna, ${c.audit} log audit.`);
+    showToast('Sandaran penuh berjaya dimuat turun.', 'success');
+  } catch (err) {
+    showToast('Gagal menyediakan sandaran: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay();
+  }
+}
+
+// Semak fail sandaran sebelum digunakan
+function validateBackup(obj) {
+  if (!obj || obj.format !== BACKUP_FORMAT) throw new Error('Fail ini bukan sandaran KraiPRO STOR.');
+  if (obj.version !== BACKUP_VERSION) throw new Error(`Versi sandaran tidak disokong (${obj.version}).`);
+  const d = obj.data || {};
+  if (!d.state || !Array.isArray(d.state.items)) throw new Error('Data stok dalam sandaran tidak sah.');
+  ['requests', 'users', 'audit', 'counters'].forEach(k => {
+    if (!Array.isArray(d[k])) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
+  });
+  const badReq = d.requests.find(r => !r || !SAFE_ID_RE.test(String(r.id || '')));
+  if (badReq) throw new Error('Terdapat permohonan dengan ID tidak sah dalam sandaran.');
+  const badUser = d.users.find(u => !u || !u.id || u.id !== String(u.id).toLowerCase() || u.email !== u.id || !['pelulus', 'pemohon'].includes(u.role));
+  if (badUser) throw new Error(`Rekod pengguna tidak sah dalam sandaran (${badUser && badUser.id}).`);
+  return obj;
+}
+
+function onRestoreFileSelected(event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file || currentUserRole !== 'superadmin') return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      pendingRestore = validateBackup(JSON.parse(e.target.result));
+    } catch (err) {
+      pendingRestore = null;
+      showToast('Fail sandaran tidak boleh digunakan: ' + (err.message || err), 'error');
+      return;
+    }
+    openRestoreModal(file.name);
+  };
+  reader.readAsText(file);
+}
+
+function openRestoreModal(filename) {
+  const b = pendingRestore;
+  const backupC = backupCounts(b.data);
+  const nowC = { items: items.length, pembekal: pembekalList.length, lpo: lpoList.length, requests: requests.length, users: appUsers.length, audit: null };
+  const labels = { items: 'Item stok', pembekal: 'Pembekal', lpo: 'Pesanan LPO', requests: 'Permohonan', users: 'Pengguna (Pelulus/Pemohon)', audit: 'Log audit' };
+
+  const info = document.getElementById('restore-file-info');
+  if (info) {
+    const when = new Date(b.createdAt).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+    info.textContent = `${filename}: dibuat ${when} oleh ${b.createdBy || '-'}`;
+  }
+  const body = document.getElementById('restore-summary-body');
+  if (body) {
+    body.innerHTML = Object.keys(labels).map(k => `
+      <tr>
+        <td class="p-2 font-semibold">${labels[k]}</td>
+        <td class="p-2 text-right font-black">${backupC[k]}</td>
+        <td class="p-2 text-right text-slate-500">${nowC[k] === null ? 'dikekalkan' : nowC[k]}</td>
+      </tr>`).join('');
+  }
+  const input = document.getElementById('restore-confirm-input');
+  if (input) input.value = '';
+  onRestoreConfirmInput();
+  document.getElementById('restore-modal')?.classList.remove('hidden');
+}
+
+function closeRestoreModal() {
+  document.getElementById('restore-modal')?.classList.add('hidden');
+  pendingRestore = null;
+}
+
+function onRestoreConfirmInput() {
+  const ok = (document.getElementById('restore-confirm-input')?.value || '').trim().toUpperCase() === 'PULIHKAN';
+  const btn = document.getElementById('restore-confirm-btn');
+  if (btn) btn.disabled = !ok || !pendingRestore;
+}
+
+async function commitInBatches(ops) {
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = db.batch();
+    ops.slice(i, i + 400).forEach(op => op(batch));
+    await batch.commit();
+  }
+}
+
+async function confirmRestoreBackup() {
+  if (currentUserRole !== 'superadmin' || !pendingRestore) return;
+  const backup = pendingRestore;
+  const d = backup.data;
+  document.getElementById('restore-modal')?.classList.add('hidden');
+  pendingRestore = null;
+
+  showLoadingOverlay('Memuat turun sandaran data semasa (keselamatan)...');
+  try {
+    // 1. Sandaran automatik data semasa sebelum ditimpa
+    const safety = await collectFullBackup();
+    downloadJson(safety, backupFilename('KraiPRO_Sandaran_SebelumPulih'));
+
+    showLoadingOverlay('Memulihkan data daripada sandaran...');
+    const ops = [];
+    const strip = ({ id, ...rest }) => rest;
+
+    // 2. Permohonan: padam yang tiada dalam sandaran, tulis semula semua dari sandaran
+    const backupReqIds = new Set(d.requests.map(r => String(r.id)));
+    safety.data.requests.forEach(r => {
+      if (!backupReqIds.has(String(r.id))) ops.push(b => b.delete(requestRef(r.id)));
+    });
+    d.requests.forEach(r => ops.push(b => b.set(requestRef(r.id), { ...strip(r), id: String(r.id) })));
+
+    // 3. Pengguna: padam yang tiada dalam sandaran, tulis semula semua dari sandaran
+    const backupUserIds = new Set(d.users.map(u => u.id));
+    safety.data.users.forEach(u => {
+      if (!backupUserIds.has(u.id)) ops.push(b => b.delete(db.collection('kraipro_users').doc(u.id)));
+    });
+    d.users.forEach(u => ops.push(b => b.set(db.collection('kraipro_users').doc(u.id), strip(u))));
+
+    // 4. Pembilang nombor permohonan
+    d.counters.forEach(c => {
+      if (c && c.id && Number.isInteger(c.seq)) ops.push(b => b.set(db.collection('kraipro_counters').doc(c.id), { seq: c.seq }));
+    });
+
+    // 5. Log audit: tambah yang tiada sahaja (log sedia ada tidak dipadam/diubah)
+    const existingAudit = new Set(safety.data.audit.map(a => a.id));
+    d.audit.forEach(a => {
+      if (a && a.id && !existingAudit.has(a.id)) ops.push(b => b.set(db.collection('kraipro_audit').doc(a.id), strip(a)));
+    });
+
+    // 6. Stok, pembekal & LPO (ganti sepenuhnya)
+    const st = d.state;
+    ops.push(b => b.set(stateDocRef(), {
+      items: st.items || [],
+      pembekalList: st.pembekalList || [],
+      lpoList: st.lpoList || [],
+      lastUpdated: new Date().toISOString()
+    }));
+
+    await commitInBatches(ops);
+
+    const c = backupCounts(d);
+    const when = new Date(backup.createdAt).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+    addAuditLog('Pulih Data', `Data dipulihkan daripada sandaran ${when} (${c.items} item, ${c.requests} permohonan, ${c.lpo} LPO, ${c.users} pengguna).`);
+    showToast('Data berjaya dipulihkan daripada sandaran.', 'success');
+  } catch (err) {
+    showToast('Pemulihan gagal: ' + authErrorMessage(err) + '. Fail sandaran keselamatan telah dimuat turun.', 'error');
+  } finally {
+    hideLoadingOverlay();
+  }
+}
+
+
+// ------------------------------------------
 // 4. EKSPORT & IMPORT CSV
 // ------------------------------------------
 function exportItemsToCSV() {
@@ -593,6 +829,7 @@ function setAuthMode(mode) {
   if (pw) pw.autocomplete = isRegister ? 'new-password' : 'current-password';
   const submitBtn = document.getElementById('auth-submit-btn');
   if (submitBtn) submitBtn.innerText = isRegister ? 'Cipta Akaun & Hantar E-mel Pengesahan' : 'Log Masuk';
+  resetPasswordVisibility();
   showAuthMessage(null);
 }
 
@@ -612,6 +849,38 @@ function authErrorMessage(err) {
     'permission-denied': 'Akses ditolak oleh peraturan keselamatan Firestore.'
   };
   return messages[code] || (err && err.message) || String(err);
+}
+
+// Tunjuk / sembunyi kata laluan pada borang log masuk
+function togglePasswordVisibility(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  const label = show ? 'Sembunyikan kata laluan' : 'Tunjuk kata laluan';
+  if (btn) {
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = show ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye';
+  }
+  input.focus();
+}
+
+// Sentiasa sembunyikan semula kata laluan selepas borang dihantar / ditukar
+function resetPasswordVisibility() {
+  ['auth-password', 'auth-password2'].forEach(id => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.type = 'password';
+    const btn = input.parentElement && input.parentElement.querySelector('button');
+    if (btn) {
+      btn.setAttribute('aria-label', 'Tunjuk kata laluan');
+      btn.title = 'Tunjuk kata laluan';
+      const icon = btn.querySelector('i');
+      if (icon) icon.className = 'fa-solid fa-eye';
+    }
+  });
 }
 
 function loadSavedLoginEmail() {
@@ -668,6 +937,7 @@ async function handleAuthSubmit() {
     const pw2El = document.getElementById('auth-password2');
     if (pwEl) pwEl.value = '';
     if (pw2El) pw2El.value = '';
+    resetPasswordVisibility();
   }
 }
 
@@ -882,6 +1152,8 @@ function applyRolePermissions() {
   });
   if (subtabPelulus) subtabPelulus.style.display = isSuper ? 'flex' : 'none';
   if (auditClearBtn) auditClearBtn.style.display = isSuper ? '' : 'none';
+  document.getElementById('backup-card')?.classList.toggle('hidden', !isSuper);
+  if (isSuper) updateBackupReminder();
 }
 
 function handleAdminLogout() {
@@ -1075,14 +1347,7 @@ function switchAdminTab(subtabId) {
     target.classList.remove('hidden');
   }
 
-  document.querySelectorAll('.admin-subtab-btn').forEach(btn => {
-    btn.className = 'admin-subtab-btn px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-2 flex-shrink-0';
-  });
-
-  const activeBtn = document.getElementById('admin-subtab-' + subtabId);
-  if (activeBtn) {
-    activeBtn.className = 'admin-subtab-btn px-4 py-2 rounded-xl text-xs font-bold transition bg-slate-900 text-white shadow-md flex items-center gap-2 flex-shrink-0';
-  }
+  styleTabGroup('.admin-subtab-btn', 'admin-subtab-' + subtabId, TAB_STYLES.admin);
 
   if (subtabId === 'kelulusan') {
     renderAdminRequests();
@@ -1619,19 +1884,48 @@ function showConfirmModal(title, msg, onOk) {
   };
 }
 
+// ---- Gaya tab (dikongsi) ----
+const TAB_STYLES = {
+  main: {
+    base: 'main-tab-btn tab-pill relative flex items-center justify-center gap-2 px-3 sm:px-6 py-2.5 sm:py-3 rounded-2xl text-xs sm:text-sm font-extrabold transition-all duration-200 border',
+    active: 'is-active bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 border-amber-300 shadow-lg shadow-amber-500/30',
+    inactive: 'bg-white/10 text-purple-100 border-white/15 hover:bg-white/20 hover:text-white'
+  },
+  admin: {
+    base: 'admin-subtab-btn tab-pill flex items-center justify-center sm:justify-start gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-extrabold transition-all duration-200 border',
+    active: 'is-active bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-900/25',
+    inactive: 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50 hover:-translate-y-0.5'
+  },
+  pill: {
+    base: 'tab-pill px-3.5 py-2 rounded-2xl text-xs font-extrabold transition-all duration-200 border',
+    active: 'is-active bg-slate-900 text-white border-slate-900 shadow-md shadow-slate-900/20',
+    inactive: 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50'
+  }
+};
+
+// Tetapkan kelas aktif/tidak aktif untuk satu kumpulan tab
+function styleTabGroup(selector, activeId, style, extraClass = '') {
+  document.querySelectorAll(selector).forEach(btn => {
+    const isActive = btn.id === activeId;
+    btn.className = [extraClass, style.base, isActive ? style.active : style.inactive].filter(Boolean).join(' ');
+  });
+}
+
+function applyTabStyles() {
+  const activeMain = document.querySelector('section[id^="content-"]:not(.hidden)');
+  styleTabGroup('.main-tab-btn', activeMain ? 'main-tab-' + activeMain.id.replace('content-', '') : 'main-tab-dashboard', TAB_STYLES.main);
+  const activeAdmin = document.querySelector('div[id^="admin-sec-"]:not(.hidden)');
+  styleTabGroup('.admin-subtab-btn', activeAdmin ? 'admin-subtab-' + activeAdmin.id.replace('admin-sec-', '') : 'admin-subtab-kelulusan', TAB_STYLES.admin);
+  styleTabGroup('.req-cat-subtab', 'req-subtab-' + currentReqCatTab, TAB_STYLES.pill, 'req-cat-subtab');
+  styleTabGroup('.approval-cat-subtab', 'approval-subtab-' + currentApprovalCatTab, TAB_STYLES.pill, 'approval-cat-subtab');
+}
+
 function switchTab(tabId) {
   document.querySelectorAll('section[id^="content-"]').forEach(sec => sec.classList.add('hidden'));
   const target = document.getElementById('content-' + tabId);
   if (target) target.classList.remove('hidden');
 
-  document.querySelectorAll('.main-tab-btn').forEach(btn => {
-    btn.className = 'main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold text-purple-200 hover:bg-slate-800/80 hover:text-white transition-all';
-  });
-
-  const activeBtn = document.getElementById('main-tab-' + tabId);
-  if (activeBtn) {
-    activeBtn.className = 'main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all shadow-md bg-slate-900 text-amber-400 ring-2 ring-amber-500/50';
-  }
+  styleTabGroup('.main-tab-btn', 'main-tab-' + tabId, TAB_STYLES.main);
 
   renderAll();
 }
@@ -1877,7 +2171,7 @@ function buildCategoryTabsHtml(list, activeCat, onClickFn, showLowBadge = true) 
     const low = showLowBadge ? subset.filter(isLowStock).length : 0;
     return `
       <button type="button" data-cat="${escapeHtml(value)}" onclick="${onClickFn}(this.dataset.cat)"
-        class="px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border ${active ? 'bg-slate-900 text-white border-slate-900 shadow' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'}">
+        class="${TAB_STYLES.pill.base} flex items-center gap-1.5 ${active ? TAB_STYLES.pill.active : TAB_STYLES.pill.inactive}">
         <span>${escapeHtml(label)}</span>
         <span class="${active ? 'bg-white/20' : 'bg-slate-100'} px-1.5 py-0.5 rounded-md text-[10px] font-black">${subset.length}</span>
         ${low ? `<span class="bg-rose-600 text-white px-1.5 py-0.5 rounded-md text-[10px] font-black" title="Perlu reorder">${low} <i class="fa-solid fa-triangle-exclamation"></i></span>` : ''}
@@ -2295,14 +2589,7 @@ function renderPaginationUI(container, curPage, totalPgs, totalItems, pageSize, 
 function switchApprovalCategoryTab(catGroup) {
   currentApprovalCatTab = catGroup;
 
-  document.querySelectorAll('.approval-cat-subtab').forEach(btn => {
-    btn.className = 'approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200';
-  });
-
-  const activeBtn = document.getElementById('approval-subtab-' + catGroup);
-  if (activeBtn) {
-    activeBtn.className = 'approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow';
-  }
+  styleTabGroup('.approval-cat-subtab', 'approval-subtab-' + catGroup, TAB_STYLES.pill, 'approval-cat-subtab');
 
   renderAdminRequests();
 }
@@ -2760,14 +3047,7 @@ function deleteItem(id) {
 function switchReqCategoryTab(catGroup) {
   currentReqCatTab = catGroup;
 
-  document.querySelectorAll('.req-cat-subtab').forEach(btn => {
-    btn.className = 'req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200';
-  });
-
-  const activeBtn = document.getElementById('req-subtab-' + catGroup);
-  if (activeBtn) {
-    activeBtn.className = 'req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow';
-  }
+  styleTabGroup('.req-cat-subtab', 'req-subtab-' + catGroup, TAB_STYLES.pill, 'req-cat-subtab');
 
   populatePemohonDropdown();
 }
@@ -3797,5 +4077,6 @@ function renderAll() {
 }
 
 window.onload = function() {
+  applyTabStyles();
   initFirebase();
 };
