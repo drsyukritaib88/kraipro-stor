@@ -1,18 +1,104 @@
-rules_version='2'
+rules_version = '2';
+
+// ==========================================
+// KraiPRO STOR - Peraturan Keselamatan Firestore
+//
+// Peranan:
+//   SuperAdmin : pkpkk@moh.gov.my (ditetapkan di sini)
+//   Pelulus    : dokumen kraipro_users/{email} dengan role == 'pelulus'
+//   Pemohon    : dokumen kraipro_users/{email} dengan role == 'pemohon'
+// Semua pengguna mesti log masuk (Firebase Auth) dan telah mengesahkan e-mel.
+// Apa-apa laluan yang tidak disenaraikan di bawah adalah DITOLAK.
+// ==========================================
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2026, 9, 23);
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+    function isSuper() {
+      return signedIn() && myEmail() == 'pkpkk@moh.gov.my';
+    }
+    function profilePath() {
+      return /databases/$(database)/documents/kraipro_users/$(myEmail());
+    }
+    function isListed() {
+      return signedIn() && exists(profilePath());
+    }
+    function isMember() {
+      return isSuper() || isListed();
+    }
+    function isApprover() {
+      return isSuper() || (isListed() && get(profilePath()).data.role == 'pelulus');
+    }
+
+    // Stok induk, pembekal & LPO (satu dokumen)
+    match /kraipro_store/live_inventory_state {
+      allow read: if isMember();
+      allow create, update: if isApprover() && request.resource.data.items is list;
+      allow delete: if false;
+    }
+
+    // Senarai pengguna berdaftar (diurus oleh SuperAdmin sahaja)
+    match /kraipro_users/{email} {
+      // Pengguna boleh semak dokumen sendiri walaupun belum didaftarkan (untuk mesej "belum berdaftar")
+      allow read: if isMember() || (signedIn() && email == myEmail());
+      allow create, update: if isSuper()
+        && email == email.lower()
+        && request.resource.data.email == email
+        && request.resource.data.role in ['pelulus', 'pemohon'];
+      allow delete: if isSuper();
+    }
+
+    // Permohonan stok (satu dokumen setiap permohonan)
+    match /kraipro_requests/{reqId} {
+      allow read: if isApprover()
+        || (isMember() && (resource == null || resource.data.ownerEmail == myEmail()));
+
+      // SuperAdmin juga boleh mencipta (untuk migrasi data lama)
+      allow create: if isSuper()
+        || (isMember()
+            && request.resource.data.ownerEmail == myEmail()
+            && request.resource.data.id == reqId
+            && reqId.matches('BPSI-[0-9]{4}-[0-9]{3,6}')
+            && request.resource.data.status == 'Pending'
+            && request.resource.data.items is list
+            && request.resource.data.items.size() > 0
+            && request.resource.data.items.size() <= 100);
+
+      // Pelulus/SuperAdmin boleh proses; pemohon hanya boleh batalkan permohonan sendiri yang masih Pending
+      allow update: if isApprover()
+        || (isMember()
+            && resource.data.ownerEmail == myEmail()
+            && resource.data.status == 'Pending'
+            && request.resource.data.status == 'Dibatalkan'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'items', 'tarikhBatal']));
+
+      allow delete: if isSuper();
+    }
+
+    // Pembilang nombor permohonan BPSI (satu dokumen setiap tahun, cth: bpsi_2026)
+    match /kraipro_counters/{counterId} {
+      allow read: if isMember();
+      allow create: if request.resource.data.keys().hasOnly(['seq'])
+        && request.resource.data.seq is int
+        && (isSuper() || (isMember() && request.resource.data.seq == 1));
+      allow update: if request.resource.data.keys().hasOnly(['seq'])
+        && request.resource.data.seq is int
+        && (isSuper() || (isMember() && request.resource.data.seq == resource.data.seq + 1));
+      allow delete: if false;
+    }
+
+    // Log jejak audit (tambah sahaja; tidak boleh diubah)
+    match /kraipro_audit/{logId} {
+      allow read: if isApprover();
+      allow create: if isSuper() || (isMember() && request.resource.data.userEmail == myEmail());
+      allow update: if false;
+      allow delete: if isSuper();
     }
   }
 }

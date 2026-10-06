@@ -1,197 +1,1553 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ms">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>KraiPRO Stor - Inventory System</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KraiPRO STOR - Sistem Pengurusan Inventori Stok</title>
+
+  <!-- Tailwind CSS & Font Awesome Icons -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <!-- Chart.js & EmailJS CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+
+  <!-- Firebase Compat SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <!-- Konfigurasi projek disediakan automatik oleh Firebase Hosting -->
+  <script src="/__/firebase/init.js"></script>
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f8fafc;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+    @media print {
+      @page {
+        size: A4 landscape;
+        margin: 10mm;
+      }
+      body * {
+        visibility: hidden !important;
+      }
+      #print-area, #print-area * {
+        visibility: visible !important;
+      }
+      #print-area {
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: white !important;
+        color: black !important;
+      }
+      .no-print, .no-print * {
+        display: none !important;
+      }
+    }
+  </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen p-4 sm:p-8">
-  <div class="max-w-5xl mx-auto space-y-6">
-    
-    <!-- Header -->
-    <header class="flex justify-between items-center border-b border-slate-800 pb-4">
-      <div>
-        <h1 class="text-2xl sm:text-3xl font-bold text-amber-500">KraiPRO Stor</h1>
-        <p class="text-xs text-slate-400">Real-Time Inventory Management System</p>
-      </div>
-      <div id="statusBadge" class="px-3 py-1 text-xs rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
-        Connecting...
-      </div>
-    </header>
+<body class="text-slate-800 antialiased min-h-screen flex flex-col">
 
-    <!-- Main Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      
-      <!-- Add Item Form -->
-      <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 h-fit space-y-4 shadow-lg">
-        <h2 class="text-lg font-semibold text-slate-200">Add Stock Item</h2>
-        <form id="itemForm" class="space-y-3">
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Item Name</label>
-            <input type="text" id="itemName" required placeholder="e.g. Engine Oil 4L" 
-                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500">
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Category</label>
-            <input type="text" id="itemCategory" required placeholder="e.g. Lubricants" 
-                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500">
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Quantity</label>
-              <input type="number" id="itemQty" min="0" required placeholder="10" 
-                     class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500">
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1">Price (RM)</label>
-              <input type="number" step="0.01" id="itemPrice" min="0" required placeholder="120.00" 
-                     class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-500">
-            </div>
-          </div>
-          <button type="submit" 
-                  class="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-2 rounded-lg text-sm transition duration-150">
-            + Add Stock Item
-          </button>
-        </form>
+  <!-- PINTU LOG MASUK (FIREBASE AUTH) - wajib untuk semua pengguna -->
+  <div id="auth-gate" class="fixed inset-0 z-[60] bg-gradient-to-br from-purple-950 via-slate-900 to-purple-950 overflow-y-auto flex items-center justify-center p-4">
+    <div class="max-w-md w-full bg-white rounded-3xl shadow-2xl border border-slate-200 p-7 space-y-4">
+      <div class="text-center">
+        <i class="fa-solid fa-boxes-packing text-4xl text-amber-500"></i>
+        <h1 class="text-2xl font-extrabold text-slate-900 mt-2">KraiPRO <span class="bg-amber-400 text-slate-950 text-xs px-2 py-0.5 rounded-full font-black align-middle">STOR</span></h1>
+        <p class="text-xs text-slate-500">Sistem Pengurusan Inventori Bahan, Alat Tulis & Bekalan Am</p>
       </div>
 
-      <!-- Inventory Table -->
-      <div class="lg:col-span-2 bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4 shadow-lg">
-        <div class="flex justify-between items-center">
-          <h2 class="text-lg font-semibold text-slate-200">Current Inventory</h2>
-          <span id="totalValue" class="text-xs font-bold text-amber-400 bg-slate-900 px-3 py-1.5 rounded-md border border-slate-700">Total Value: RM 0.00</span>
+      <p id="auth-error" class="hidden text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-2.5"></p>
+      <p id="auth-info" class="hidden text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5"></p>
+
+      <!-- Memuatkan -->
+      <div id="auth-step-loading" class="text-center py-6 text-slate-500 text-xs font-bold">
+        <i class="fa-solid fa-spinner fa-spin text-2xl text-purple-600 mb-2 block"></i> Menyemak sesi log masuk...
+      </div>
+
+      <!-- Log Masuk / Daftar -->
+      <form id="auth-step-login" class="hidden space-y-3 text-left" onsubmit="event.preventDefault(); handleAuthSubmit();">
+        <div class="bg-slate-100 p-1.5 rounded-2xl grid grid-cols-2 gap-1">
+          <button type="button" id="auth-mode-login" onclick="setAuthMode('login')" class="py-2 rounded-xl text-xs font-black">Log Masuk</button>
+          <button type="button" id="auth-mode-register" onclick="setAuthMode('register')" class="py-2 rounded-xl text-xs font-bold">Akaun Baharu</button>
         </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">E-mel Rasmi</label>
+          <input type="email" id="auth-email" autocomplete="username" required placeholder="nama@moh.gov.my" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Kata Laluan</label>
+          <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+        </div>
+        <div id="auth-password2-wrap" class="hidden">
+          <label class="block text-xs font-bold text-slate-700 mb-1">Sahkan Kata Laluan</label>
+          <input type="password" id="auth-password2" autocomplete="new-password" minlength="8" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+          <p class="text-[11px] text-slate-500 mt-1">Minimum 8 aksara. E-mel anda mesti telah didaftarkan oleh SuperAdmin.</p>
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <label class="flex items-center gap-2 text-xs font-semibold text-slate-600 select-none">
+            <input type="checkbox" id="auth-remember" class="w-4 h-4 rounded border-slate-300"> Simpan e-mel
+          </label>
+          <button type="button" id="auth-forgot-btn" onclick="handleForgotPassword()" class="text-xs font-bold text-purple-700 hover:underline">Lupa kata laluan?</button>
+        </div>
+        <button type="submit" id="auth-submit-btn" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs py-3.5 rounded-2xl transition shadow-md">Log Masuk</button>
+      </form>
 
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-sm text-slate-300">
-            <thead class="text-xs text-slate-400 uppercase bg-slate-900/50 border-b border-slate-700">
-              <tr>
-                <th class="py-3 px-3">Item</th>
-                <th class="py-3 px-3">Category</th>
-                <th class="py-3 px-3 text-center">Qty</th>
-                <th class="py-3 px-3 text-right">Price</th>
-                <th class="py-3 px-3 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody id="inventoryTable" class="divide-y divide-slate-700/50">
-              <tr>
-                <td colspan="5" class="py-6 text-center text-slate-500">Loading inventory data...</td>
-              </tr>
-            </tbody>
-          </table>
+      <!-- Sahkan E-mel -->
+      <div id="auth-step-verify" class="hidden space-y-3 text-center">
+        <i class="fa-solid fa-envelope-circle-check text-4xl text-amber-500"></i>
+        <h3 class="text-lg font-black text-slate-800">Sahkan E-mel Anda</h3>
+        <p class="text-xs text-slate-600">Pautan pengesahan telah dihantar ke <b id="auth-verify-email" class="text-purple-700"></b>. Klik pautan tersebut (semak juga folder Spam), kemudian tekan butang di bawah.</p>
+        <button type="button" onclick="checkEmailVerified()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-3 rounded-2xl">Saya Telah Sahkan - Teruskan</button>
+        <div class="flex gap-2">
+          <button type="button" onclick="resendVerificationEmail()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl">Hantar Semula</button>
+          <button type="button" onclick="handleAdminLogout()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl">Keluar</button>
         </div>
       </div>
 
+      <!-- Belum Didaftarkan -->
+      <div id="auth-step-unlisted" class="hidden space-y-3 text-center">
+        <i class="fa-solid fa-user-lock text-4xl text-rose-500"></i>
+        <h3 class="text-lg font-black text-slate-800">Akaun Belum Didaftarkan</h3>
+        <p class="text-xs text-slate-600">E-mel <b id="auth-unlisted-email" class="text-purple-700"></b> belum didaftarkan dalam KraiPRO STOR. Sila hubungi SuperAdmin untuk didaftarkan, kemudian log masuk semula.</p>
+        <button type="button" onclick="handleAdminLogout()" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs py-3 rounded-2xl">Keluar</button>
+      </div>
     </div>
   </div>
 
-  <!-- Firebase Integration -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { 
-      getFirestore, 
-      collection, 
-      addDoc, 
-      deleteDoc, 
-      doc, 
-      onSnapshot, 
-      serverTimestamp 
-    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  <!-- HEADER SISTEM -->
+  <header class="bg-gradient-to-r from-purple-950 via-slate-900 to-purple-950 text-white shadow-xl border-b-4 border-amber-500 no-print">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+        
+        <div class="flex items-center gap-3 sm:gap-5 w-full md:w-auto">
+          <div class="flex-shrink-0 bg-slate-900/80 p-1.5 rounded-2xl border-2 border-purple-400/40 shadow-lg">
+            <i class="fa-solid fa-boxes-packing text-3xl sm:text-4xl text-amber-400 p-2"></i>
+          </div>
 
-    const firebaseConfig = {
-      apiKey: "AIzaSyBtl82M_CFT_fTzuUKHhnC9zablqT1BteY",
-      authDomain: "kraipro-stor.firebaseapp.com",
-      projectId: "kraipro-stor",
-      storageBucket: "kraipro-stor.firebasestorage.app",
-      messagingSenderId: "760657174639",
-      appId: "1:760657174639:web:a4aa7876b5e05526daed9a"
-    };
+          <div class="flex flex-col justify-center gap-1 flex-grow">
+            <div class="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <h1 class="text-xl sm:text-3xl font-extrabold tracking-tight text-white flex items-center gap-2">
+                  <span>KraiPRO</span>
+                  <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-black uppercase tracking-wider">STOR</span>
+                </h1>
+                <p class="text-[11px] sm:text-xs font-medium text-purple-200/90">Sistem Pengurusan Inventori Bahan, Alat Tulis & Bekalan Am</p>
+              </div>
 
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    const inventoryCol = collection(db, "inventory");
+              <div class="flex items-center gap-2">
+                <!-- Status Sync Badge -->
+                <div id="firestore-sync-badge" class="flex items-center gap-1.5 bg-slate-900/90 border border-slate-700 px-2.5 py-1 rounded-xl text-[10px] sm:text-[11px] font-semibold text-slate-300 shadow">
+                  <span id="firestore-sync-dot" class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
+                  <span id="firestore-sync-text">Menyambung Cloud...</span>
+                </div>
 
-    const statusBadge = document.getElementById("statusBadge");
-    const itemForm = document.getElementById("itemForm");
-    const inventoryTable = document.getElementById("inventoryTable");
-    const totalValueEl = document.getElementById("totalValue");
+                <!-- Admin Status Indicator -->
+                <div id="header-admin-status" style="display: none;" class="items-center gap-1.5 bg-slate-900/90 border border-emerald-500/50 px-2.5 py-1 rounded-xl text-[11px] font-semibold text-emerald-300 shadow-md">
+                  <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span id="header-user-role" class="hidden sm:inline font-bold">Pentadbir</span>
+                  <button type="button" onclick="handleAdminLogout()" class="ml-1 bg-rose-600/80 hover:bg-rose-600 text-white px-2 py-0.5 rounded-lg text-[10px] transition">
+                    Keluar
+                  </button>
+                </div>
+              </div>
+            </div>
 
-    // Real-Time Database Listener
-    onSnapshot(inventoryCol, (snapshot) => {
-      statusBadge.textContent = "Live Connected";
-      statusBadge.className = "px-3 py-1 text-xs rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+            <!-- Navigation Tabs Utama -->
+            <nav class="grid grid-cols-3 gap-1.5 sm:flex sm:gap-2 mt-2">
+              <button type="button" id="main-tab-dashboard" onclick="switchTab('dashboard')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all shadow-md bg-slate-900 text-amber-400 ring-2 ring-amber-500/50">
+                <i class="fa-solid fa-chart-pie"></i>
+                <span class="truncate">Dashboard</span>
+              </button>
+              <button type="button" id="main-tab-pemohon" onclick="switchTab('pemohon')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold text-purple-200 hover:bg-slate-800/80 hover:text-white transition-all">
+                <i class="fa-solid fa-paper-plane"></i>
+                <span class="truncate">Permohonan</span>
+              </button>
+              <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-[11px] sm:text-xs font-bold text-purple-200 hover:bg-slate-800/80 hover:text-white transition-all relative">
+                <i class="fa-solid fa-user-shield"></i>
+                <span class="truncate">Pentadbir</span>
+                <span id="main-tab-admin-badge" class="hidden bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full animate-pulse shadow ml-0.5">0</span>
+              </button>
+            </nav>
+          </div>
+        </div>
 
-      if (snapshot.empty) {
-        inventoryTable.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-slate-500">No items found in stock. Add one on the left!</td></tr>`;
-        totalValueEl.textContent = "Total Value: RM 0.00";
-        return;
-      }
+      </div>
+    </div>
+  </header>
 
-      let html = "";
-      let grandTotal = 0;
+  <!-- KANDUNGAN UTAMA -->
+  <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 no-print">
 
-      snapshot.docs.forEach((docSnap) => {
-        const item = docSnap.data();
-        const id = docSnap.id;
-        const totalItemVal = (item.quantity || 0) * (item.price || 0);
-        grandTotal += totalItemVal;
+    <!-- SEKSYEN 1: DASHBOARD -->
+    <section id="content-dashboard" class="space-y-6">
+      <div class="bg-white p-3 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col sm:flex-row sm:items-center gap-2">
+        <span class="text-xs font-extrabold text-slate-600 whitespace-nowrap"><i class="fa-solid fa-filter text-purple-600 mr-1"></i> Tapis Kategori:</span>
+        <div id="dashboard-cat-tabs" class="flex flex-wrap gap-1.5"></div>
+      </div>
 
-        html += `
-          <tr class="hover:bg-slate-700/30 transition">
-            <td class="py-3 px-3 font-medium text-slate-100">${item.name}</td>
-            <td class="py-3 px-3 text-slate-400"><span class="bg-slate-900 text-xs px-2 py-0.5 rounded border border-slate-700">${item.category}</span></td>
-            <td class="py-3 px-3 text-center font-semibold text-amber-400">${item.quantity}</td>
-            <td class="py-3 px-3 text-right">RM ${Number(item.price).toFixed(2)}</td>
-            <td class="py-3 px-3 text-center">
-              <button onclick="deleteItem('${id}')" class="text-rose-400 hover:text-rose-300 text-xs font-medium hover:underline">Delete</button>
-            </td>
-          </tr>
-        `;
-      });
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
+          <div class="p-3.5 bg-blue-50 text-blue-600 rounded-xl">
+            <i class="fa-solid fa-boxes-stacked text-2xl"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Jumlah Item Stok</p>
+            <h3 id="stat-total-items" class="text-2xl font-black text-slate-800">0</h3>
+          </div>
+        </div>
 
-      inventoryTable.innerHTML = html;
-      totalValueEl.textContent = `Total Value: RM ${grandTotal.toFixed(2)}`;
-    }, (error) => {
-      console.error(error);
-      statusBadge.textContent = "Error Connecting";
-      statusBadge.className = "px-3 py-1 text-xs rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20";
-    });
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
+          <div class="p-3.5 bg-amber-50 text-amber-600 rounded-xl">
+            <i class="fa-solid fa-triangle-exclamation text-2xl"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Stok Paras Reorder</p>
+            <h3 id="stat-low-stock" class="text-2xl font-black text-amber-600">0</h3>
+          </div>
+        </div>
 
-    // Add New Inventory Item
-    itemForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const name = document.getElementById("itemName").value.trim();
-      const category = document.getElementById("itemCategory").value.trim();
-      const quantity = parseInt(document.getElementById("itemQty").value, 10);
-      const price = parseFloat(document.getElementById("itemPrice").value);
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
+          <div class="p-3.5 bg-purple-50 text-purple-600 rounded-xl">
+            <i class="fa-solid fa-clipboard-check text-2xl"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Permohonan Bulan Ini</p>
+            <h3 id="stat-month-requests" class="text-2xl font-black text-slate-800">0</h3>
+          </div>
+        </div>
 
-      if (!name || !category || isNaN(quantity) || isNaN(price)) return;
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
+          <div class="p-3.5 bg-emerald-50 text-emerald-600 rounded-xl">
+            <i class="fa-solid fa-coins text-2xl"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Nilai Pengeluaran (RM)</p>
+            <h3 id="stat-total-value" class="text-2xl font-black text-emerald-600">RM 0.00</h3>
+          </div>
+        </div>
+      </div>
 
-      try {
-        await addDoc(inventoryCol, {
-          name,
-          category,
-          quantity,
-          price,
-          createdAt: serverTimestamp()
-        });
-        itemForm.reset();
-      } catch (err) {
-        alert("Failed to save item: " + err.message);
-      }
-    });
+      <!-- GRAF & RINGKASAN -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col justify-between">
+          <div>
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <div>
+                <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                  <i class="fa-solid fa-chart-bar text-purple-600"></i> Top 10 Item Dikeluarkan
+                </h3>
+                <p class="text-xs text-slate-500">Kuantiti barang paling banyak diluluskan & dikeluarkan</p>
+              </div>
 
-    // Delete Inventory Item
-    window.deleteItem = async (id) => {
-      if (confirm("Delete this inventory item?")) {
-        try {
-          await deleteDoc(doc(db, "inventory", id));
-        } catch (err) {
-          alert("Failed to delete item: " + err.message);
-        }
-      }
-    };
-  </script>
+              <div class="flex items-center gap-2">
+                <label class="text-xs font-bold text-slate-600 whitespace-nowrap">Unit / Klinik:</label>
+                <select id="top-chart-unit-filter" onchange="renderPieChartAndTopTable()" class="bg-slate-50 border border-slate-300 text-slate-800 text-xs rounded-xl p-2 font-medium focus:ring-2 focus:ring-purple-500">
+                  <option value="">Semua Unit / Klinik</option>
+                  <option value="PKPD Kuala Krai">PKPD Kuala Krai</option>
+                  <option value="KP Kuala Krai">KP Kuala Krai</option>
+                  <option value="KP di KK Kuala Krai">KP di KK Kuala Krai</option>
+                  <option value="KP di KK Pahi">KP di KK Pahi</option>
+                  <option value="KP di KK Manek Urai">KP di KK Manek Urai</option>
+                  <option value="KP di KK Dabong">KP di KK Dabong</option>
+                  <option value="Unit Restoratif">Unit Restoratif</option>
+                  <option value="Unit Periodontik">Unit Periodontik</option>
+                  <option value="Unit Ortodontik">Unit Ortodontik</option>
+                  <option value="Jabatan Bedah Mulut & Maksilofasial">Jabatan Bedah Mulut & Maksilofasial</option>
+                  <option value="Jabatan Pergigian Pediatrik">Jabatan Pergigian Pediatrik</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="relative h-64 w-full">
+              <canvas id="topItemsChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col justify-between space-y-4">
+          <div>
+            <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2 mb-1">
+              <i class="fa-solid fa-receipt text-amber-500"></i> Nilai Pengeluaran Stok (RM)
+            </h3>
+            <p class="text-xs text-slate-500 mb-3">Pengiraan nilai mengikut kategori perolehan stok</p>
+
+            <div class="space-y-2 mb-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+              <div>
+                <label class="text-[11px] font-bold text-slate-600 block mb-1">Unit / Klinik:</label>
+                <select id="report-unit-filter" onchange="calculateIssuanceReport()" class="w-full bg-white border border-slate-300 text-xs rounded-lg p-1.5 font-medium">
+                  <option value="">Semua Unit / Klinik</option>
+                  <option value="PKPD Kuala Krai">PKPD Kuala Krai</option>
+                  <option value="KP Kuala Krai">KP Kuala Krai</option>
+                  <option value="KP di KK Kuala Krai">KP di KK Kuala Krai</option>
+                  <option value="KP di KK Pahi">KP di KK Pahi</option>
+                  <option value="KP di KK Manek Urai">KP di KK Manek Urai</option>
+                  <option value="KP di KK Dabong">KP di KK Dabong</option>
+                  <option value="Unit Restoratif">Unit Restoratif</option>
+                  <option value="Unit Periodontik">Unit Periodontik</option>
+                  <option value="Unit Ortodontik">Unit Ortodontik</option>
+                  <option value="Jabatan Bedah Mulut & Maksilofasial">Jabatan Bedah Mulut & Maksilofasial</option>
+                  <option value="Jabatan Pergigian Pediatrik">Jabatan Pergigian Pediatrik</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="text-[11px] font-bold text-slate-600 block mb-1">Tahun:</label>
+                <select id="report-year-filter" onchange="calculateIssuanceReport()" class="w-full bg-white border border-slate-300 text-xs rounded-lg p-1.5 font-medium">
+                  <option value="">Semua Tahun</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 p-2.5 rounded-xl mb-2">
+              <span class="text-[10px] font-extrabold uppercase text-blue-700 tracking-wide block mb-0.5">1. Alat Tulis</span>
+              <div class="flex items-baseline justify-between">
+                <span id="report-val-alat-tulis" class="text-base font-black text-blue-900">RM 0.00</span>
+                <span id="report-qty-alat-tulis" class="text-[11px] font-bold text-blue-600">0 unit</span>
+              </div>
+            </div>
+
+            <div class="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200/80 p-2.5 rounded-xl mb-2">
+              <span class="text-[10px] font-extrabold uppercase text-teal-800 tracking-wide block mb-0.5">2. Bekalan Am</span>
+              <div class="flex items-baseline justify-between">
+                <span id="report-val-bekalan-am" class="text-base font-black text-teal-900">RM 0.00</span>
+                <span id="report-qty-bekalan-am" class="text-[11px] font-bold text-teal-700">0 unit</span>
+              </div>
+            </div>
+
+            <div class="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200/80 p-2.5 rounded-xl mb-2">
+              <span class="text-[10px] font-extrabold uppercase text-purple-800 tracking-wide block mb-0.5">3. Bahan Pergigian (Kontrak)</span>
+              <div class="flex items-baseline justify-between">
+                <span id="report-val-dent-kontrak" class="text-base font-black text-purple-900">RM 0.00</span>
+                <span id="report-qty-dent-kontrak" class="text-[11px] font-bold text-purple-600">0 unit</span>
+              </div>
+            </div>
+
+            <div class="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200/80 p-2.5 rounded-xl">
+              <span class="text-[10px] font-extrabold uppercase text-amber-800 tracking-wide block mb-0.5">4. Bahan Pergigian (Bukan Kontrak)</span>
+              <div class="flex items-baseline justify-between">
+                <span id="report-val-dent-bukan-kontrak" class="text-base font-black text-amber-900">RM 0.00</span>
+                <span id="report-qty-dent-bukan-kontrak" class="text-[11px] font-bold text-amber-700">0 unit</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="pt-2 border-t border-slate-200 flex items-center justify-between">
+            <span class="text-xs font-extrabold text-slate-700">Jumlah Keseluruhan:</span>
+            <div class="text-right">
+              <span id="report-val-total" class="text-base font-black text-emerald-600 block">RM 0.00</span>
+              <span id="report-qty-total" class="text-[11px] text-slate-500">0 kuantiti</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Jadual Baki Stok Ringkas -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden">
+        <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-boxes-stacked text-purple-600"></i> Senarai Baki Stok
+            </h3>
+            <p class="text-xs text-slate-500">Semakan baki kuantiti fizikal dan harga seunit item</p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+            <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl">
+              <span class="text-xs font-bold text-slate-600">Papar:</span>
+              <select id="baki-page-size" onchange="changeBakiPageSize(this.value)" class="bg-transparent text-xs font-bold text-purple-800 focus:outline-none cursor-pointer">
+                <option value="15">15 item</option>
+                <option value="25" selected>25 item</option>
+                <option value="50">50 item</option>
+                <option value="100">100 item</option>
+                <option value="all">Semua (Penuh)</option>
+              </select>
+            </div>
+
+            <div class="relative flex-grow sm:flex-grow-0">
+              <i class="fa-solid fa-search absolute left-3 top-3 text-slate-400 text-xs"></i>
+              <input type="text" id="baki-search" onkeyup="bakiPage = 1; renderBakiTable();" placeholder="Cari item..." class="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 text-xs rounded-xl w-full sm:w-56 focus:ring-2 focus:ring-purple-500 font-medium">
+            </div>
+
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="bg-slate-900 text-amber-400 font-bold uppercase tracking-wider">
+                <th class="p-3.5 text-center w-12">Bil.</th>
+                <th class="p-3.5">Kod / SKU</th>
+                <th class="p-3.5">Perihal Barang</th>
+                <th class="p-3.5">Kategori Utama / Sub-Kategori</th>
+                <th class="p-3.5 text-right">Harga Seunit (RM)</th>
+                <th class="p-3.5 text-center">Baki Semasa</th>
+                <th class="p-3.5 text-center">Min / Reorder Level</th>
+                <th class="p-3.5 text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody id="baki-table-body" class="divide-y divide-slate-100 text-slate-700 font-medium">
+            </tbody>
+          </table>
+        </div>
+
+        <div id="baki-pagination-container" class="p-4 border-t border-slate-100 bg-slate-50/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+        </div>
+      </div>
+    </section>
+
+    <!-- SEKSYEN 2: PERMOHONAN STOK -->
+    <section id="content-pemohon" class="hidden space-y-6">
+      
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+        <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2 mb-2">
+          <i class="fa-solid fa-pen-to-square text-purple-600"></i> Borang Permohonan Stok Baru
+        </h3>
+        <p class="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-bold mb-4">
+          <i class="fa-solid fa-circle-info mr-1 text-amber-600"></i> PENTING: Permohonan mesti dibuat secara berasingan mengikut kategori (Bahan Pergigian, Alat Tulis, Bekalan Am, atau Bahan Promosi).
+        </p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Nama Pemohon <span class="text-rose-500">*</span></label>
+            <input type="text" id="req-nama" placeholder="Cth: Dr. Ahmad Hafiz" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Jawatan Pemohon <span class="text-rose-500">*</span></label>
+            <select id="req-jawatan" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              <option value="">-- Pilih Jawatan --</option>
+              <option value="Pakar Pergigian">Pakar Pergigian</option>
+              <option value="Pegawai Pergigian">Pegawai Pergigian</option>
+              <option value="Juruterapi Pergigian">Juruterapi Pergigian</option>
+              <option value="Juruteknologi Pergigian">Juruteknologi Pergigian</option>
+              <option value="Pembantu Pembedahan Pergigian">Pembantu Pembedahan Pergigian</option>
+              <option value="Pembantu Perawatan Kesihatan">Pembantu Perawatan Kesihatan</option>
+              <option value="Penolong Akauntan">Penolong Akauntan</option>
+              <option value="Pembantu Khidmat Am">Pembantu Khidmat Am</option>
+              <option value="Pembantu Tadbir">Pembantu Tadbir</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Gred Jawatan <span class="text-rose-500">*</span></label>
+            <select id="req-gred" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              <option value="">-- Pilih Gred --</option>
+              <option value="UG15">UG15</option>
+              <option value="UG14">UG14</option>
+              <option value="UG13">UG13</option>
+              <option value="UG12">UG12</option>
+              <option value="UG10">UG10</option>
+              <option value="UG9">UG9</option>
+              <option value="U7">U7</option>
+              <option value="U6">U6</option>
+              <option value="U5">U5</option>
+              <option value="U3">U3</option>
+              <option value="U2">U2</option>
+              <option value="U1">U1</option>
+              <option value="W6">W6</option>
+              <option value="W5">W5</option>
+              <option value="N3">N3</option>
+              <option value="N2">N2</option>
+              <option value="N1">N1</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Unit / Klinik <span class="text-rose-500">*</span></label>
+            <select id="req-unit" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              <option value="">-- Pilih Unit / Klinik --</option>
+              <option value="PKPD Kuala Krai">PKPD Kuala Krai</option>
+              <option value="KP Kuala Krai">KP Kuala Krai</option>
+              <option value="KP di KK Kuala Krai">KP di KK Kuala Krai</option>
+              <option value="KP di KK Pahi">KP di KK Pahi</option>
+              <option value="KP di KK Manek Urai">KP di KK Manek Urai</option>
+              <option value="KP di KK Dabong">KP di KK Dabong</option>
+              <option value="Unit Restoratif">Unit Restoratif</option>
+              <option value="Unit Periodontik">Unit Periodontik</option>
+              <option value="Unit Ortodontik">Unit Ortodontik</option>
+              <option value="Jabatan Bedah Mulut & Maksilofasial">Jabatan Bedah Mulut & Maksilofasial</option>
+              <option value="Jabatan Pergigian Pediatrik">Jabatan Pergigian Pediatrik</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-4">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3 border-b border-slate-200 pb-2">
+            <h4 class="text-xs font-bold uppercase text-slate-700 tracking-wider">Pilih Kategori & Item Permohonan</h4>
+            
+            <div class="flex flex-wrap gap-1.5 overflow-x-auto">
+              <button type="button" id="req-subtab-all" onclick="switchReqCategoryTab('all')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow">
+                Semua Item
+              </button>
+              <button type="button" id="req-subtab-pergigian" onclick="switchReqCategoryTab('pergigian')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+                🦷 Bahan Pergigian
+              </button>
+              <button type="button" id="req-subtab-alat_tulis" onclick="switchReqCategoryTab('alat_tulis')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+                ✏️ Alat Tulis
+              </button>
+              <button type="button" id="req-subtab-bekalan_am" onclick="switchReqCategoryTab('bekalan_am')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+                📦 Bekalan Am
+              </button>
+              <button type="button" id="req-subtab-promosi" onclick="switchReqCategoryTab('promosi')" class="req-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">
+                📣 Bahan Promosi
+              </button>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+              <input type="text" id="req-item-search-input" onkeyup="filterReqItemDropdown()" placeholder="🔍 Taip nama item, SKU, atau kategori untuk cari..." class="pl-9 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium w-full focus:ring-2 focus:ring-purple-500">
+              <button type="button" onclick="clearReqItemSearch()" class="absolute right-3 top-2 text-slate-400 hover:text-slate-600 text-xs font-bold">&times;</button>
+            </div>
+            <p id="req-item-search-count" class="text-[10px] text-slate-500 mt-1 font-semibold"></p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+            <div class="sm:col-span-7">
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Item Stok</label>
+              <select id="req-item-select" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+              </select>
+            </div>
+
+            <div class="sm:col-span-3">
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Kuantiti Memohon</label>
+              <input type="number" id="req-item-qty" min="1" value="1" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+            </div>
+
+            <div class="sm:col-span-2">
+              <button type="button" onclick="addDraftItem()" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs p-2 rounded-lg transition shadow-md flex items-center justify-center gap-1">
+                <i class="fa-solid fa-plus"></i> Tambah
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mb-4 overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="bg-slate-100 text-slate-700 font-bold uppercase">
+                <th class="p-3">SKU</th>
+                <th class="p-3">Perihal Barang</th>
+                <th class="p-3">Kategori</th>
+                <th class="p-3 text-center">Baki Stok</th>
+                <th class="p-3 text-center">Kuantiti Memohon</th>
+                <th class="p-3 text-center">Tindakan</th>
+              </tr>
+            </thead>
+            <tbody id="draft-table-body" class="divide-y divide-slate-100">
+            </tbody>
+          </table>
+        </div>
+
+        <button type="button" id="req-submit-btn" onclick="submitRequest()" class="disabled:opacity-60 disabled:cursor-not-allowed bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-6 py-3 rounded-xl transition shadow-lg flex items-center gap-2">
+          <i class="fa-solid fa-paper-plane"></i> Hantar Permohonan Stok
+        </button>
+      </div>
+
+      <div class="space-y-6">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+          <h3 class="text-md font-extrabold text-amber-700 flex items-center gap-2 mb-4">
+            <i class="fa-solid fa-clock-rotate-left text-amber-500"></i> Permohonan Belum Selesai (Menunggu Kelulusan)
+          </h3>
+          <div id="pending-history-container" class="space-y-4">
+          </div>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+          <h3 class="text-md font-extrabold text-emerald-800 flex items-center gap-2 mb-4">
+            <i class="fa-solid fa-circle-check text-emerald-500"></i> Sejarah Permohonan Selesai
+          </h3>
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+              <div class="relative flex-grow min-w-[200px]">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                <input type="text" id="hist-pemohon-search" oninput="onHistoryFilterChange('hist-pemohon')" placeholder="Cari No. BPSI, nama, unit atau item..." class="pl-8 pr-3 py-2 w-full bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              </div>
+              <select id="hist-pemohon-year" onchange="onHistoryFilterChange('hist-pemohon')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Tahun</option>
+              </select>
+              <select id="hist-pemohon-month" onchange="onHistoryFilterChange('hist-pemohon')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Bulan</option>
+                <option value="01">Januari</option><option value="02">Februari</option><option value="03">Mac</option>
+                <option value="04">April</option><option value="05">Mei</option><option value="06">Jun</option>
+                <option value="07">Julai</option><option value="08">Ogos</option><option value="09">September</option>
+                <option value="10">Oktober</option><option value="11">November</option><option value="12">Disember</option>
+              </select>
+              <select id="hist-pemohon-status" onchange="onHistoryFilterChange('hist-pemohon')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Status</option>
+                <option value="Selesai">Diluluskan</option>
+                <option value="Ditolak">Ditolak</option>
+                <option value="Dibatalkan">Dibatalkan</option>
+              </select>
+              <button type="button" onclick="resetHistoryFilter('hist-pemohon')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-2 rounded-xl transition"><i class="fa-solid fa-rotate-left mr-1"></i> Reset</button>
+            </div>
+            <p id="hist-pemohon-summary" class="text-[11px] text-slate-500 font-semibold mb-3"></p>
+            <div id="completed-history-container" class="space-y-3">
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- SEKSYEN 3: PENTADBIR -->
+    <section id="content-admin" class="hidden space-y-6">
+      
+      <!-- Admin Panel (Selepas Log Masuk) -->
+      <div id="admin-panel" class="hidden space-y-6">
+        
+        <!-- Summary Card -->
+        <div id="admin-tasks-summary-card" class="bg-gradient-to-r from-slate-900 via-purple-950 to-slate-900 text-white p-4 sm:p-5 rounded-2xl border-l-4 border-amber-500 shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <div class="p-3 bg-amber-500/20 text-amber-400 rounded-xl flex-shrink-0">
+              <i class="fa-solid fa-bell text-xl animate-bounce"></i>
+            </div>
+            <div>
+              <h4 class="text-sm font-black text-amber-400 flex items-center gap-2">
+                <span>RINGKASAN TUGASAN PENTADBIR</span>
+              </h4>
+              <p id="admin-tasks-summary-text" class="text-xs text-purple-200 font-medium mt-0.5">Semakan tugasan yang memerlukan tindakan segera.</p>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
+            <button type="button" onclick="switchAdminTab('kelulusan')" class="flex-1 md:flex-initial bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow flex items-center justify-center gap-1.5">
+              <i class="fa-solid fa-clipboard-check"></i>
+              <span>Kelulusan</span>
+              <span id="card-count-req" class="bg-slate-950 text-amber-400 px-2 py-0.5 rounded-full text-[10px] font-black">0</span>
+            </button>
+
+            <button type="button" onclick="switchAdminTab('reorder')" class="flex-1 md:flex-initial bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow flex items-center justify-center gap-1.5">
+              <i class="fa-solid fa-triangle-exclamation"></i>
+              <span>Perlu Reorder</span>
+              <span id="card-count-low" class="bg-rose-950 text-rose-200 px-2 py-0.5 rounded-full text-[10px] font-black">0</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Subtabs Navigation (Refactored to Flex-Wrap for 1-Page No Horizontal Scroll) -->
+        <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-200/80 flex flex-wrap gap-2">
+          <button type="button" id="admin-subtab-kelulusan" onclick="switchAdminTab('kelulusan')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-900 text-white shadow-md flex items-center gap-1.5">
+            <i class="fa-solid fa-clipboard-check"></i>
+            <span>Kelulusan Permohonan</span>
+            <span id="badge-admin-pending-req" class="hidden bg-amber-400 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
+          </button>
+
+          <button type="button" id="admin-subtab-katalog" onclick="switchAdminTab('katalog')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-boxes-packing"></i>
+            <span>1. Stok Induk</span>
+          </button>
+
+          <button type="button" id="admin-subtab-reorder" onclick="switchAdminTab('reorder')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>2. Senarai Perlu Reorder</span>
+            <span id="badge-admin-low-stock" class="hidden bg-rose-500 text-white font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
+          </button>
+
+          <button type="button" id="admin-subtab-pelulus" onclick="switchAdminTab('pelulus')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-users-gear"></i>
+            <span>Pengurusan Pengguna</span>
+          </button>
+
+          <button type="button" id="admin-subtab-lpo" onclick="switchAdminTab('lpo')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-cart-flatbed"></i>
+            <span>Pesanan LPO</span>
+            <span id="badge-admin-pending-lpo" class="hidden bg-blue-500 text-white font-black text-[10px] px-2 py-0.5 rounded-full shadow">0</span>
+          </button>
+
+          <button type="button" id="admin-subtab-pembekal" onclick="switchAdminTab('pembekal')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-truck-field"></i>
+            <span>Direktori Pembekal</span>
+          </button>
+
+          <button type="button" id="admin-subtab-laporan" onclick="switchAdminTab('laporan')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-file-invoice-dollar"></i>
+            <span>Laporan & KEW.PS-14</span>
+          </button>
+
+          <button type="button" id="admin-subtab-audit" onclick="switchAdminTab('audit')" class="admin-subtab-btn px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition flex items-center gap-1.5">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+            <span>Jejak Audit</span>
+          </button>
+        </div>
+
+        <!-- ADMIN SUBTAB: KELULUSAN -->
+        <div id="admin-sec-kelulusan" class="space-y-6">
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-3">
+              <h3 class="text-lg font-extrabold text-amber-700 flex items-center gap-2">
+                <i class="fa-solid fa-clock-rotate-left text-amber-500"></i> Permohonan Menunggu Kelulusan
+              </h3>
+
+              <div class="flex flex-wrap gap-1.5 overflow-x-auto">
+                <button type="button" id="approval-subtab-all" onclick="switchApprovalCategoryTab('all')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold bg-slate-900 text-white shadow">Semua</button>
+                <button type="button" id="approval-subtab-pergigian" onclick="switchApprovalCategoryTab('pergigian')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">🦷 Pergigian</button>
+                <button type="button" id="approval-subtab-alat_tulis" onclick="switchApprovalCategoryTab('alat_tulis')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">✏️ Alat Tulis</button>
+                <button type="button" id="approval-subtab-bekalan_am" onclick="switchApprovalCategoryTab('bekalan_am')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">📦 Bekalan Am</button>
+                <button type="button" id="approval-subtab-promosi" onclick="switchApprovalCategoryTab('promosi')" class="approval-cat-subtab px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200">📣 Promosi</button>
+              </div>
+            </div>
+
+            <div id="admin-pending-container" class="space-y-4">
+            </div>
+          </div>
+
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80">
+            <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2 mb-4">
+              <i class="fa-solid fa-circle-check text-emerald-600"></i> Rekod Permohonan Diproses
+            </h3>
+            <div class="flex flex-wrap items-center gap-2 mb-2">
+              <div class="relative flex-grow min-w-[200px]">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                <input type="text" id="hist-admin-search" oninput="onHistoryFilterChange('hist-admin')" placeholder="Cari No. BPSI, nama, unit atau item..." class="pl-8 pr-3 py-2 w-full bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              </div>
+              <select id="hist-admin-year" onchange="onHistoryFilterChange('hist-admin')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Tahun</option>
+              </select>
+              <select id="hist-admin-month" onchange="onHistoryFilterChange('hist-admin')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Bulan</option>
+                <option value="01">Januari</option><option value="02">Februari</option><option value="03">Mac</option>
+                <option value="04">April</option><option value="05">Mei</option><option value="06">Jun</option>
+                <option value="07">Julai</option><option value="08">Ogos</option><option value="09">September</option>
+                <option value="10">Oktober</option><option value="11">November</option><option value="12">Disember</option>
+              </select>
+              <select id="hist-admin-status" onchange="onHistoryFilterChange('hist-admin')" class="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold">
+                <option value="">Semua Status</option>
+                <option value="Selesai">Diluluskan</option>
+                <option value="Ditolak">Ditolak</option>
+                <option value="Dibatalkan">Dibatalkan</option>
+              </select>
+              <button type="button" onclick="resetHistoryFilter('hist-admin')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-2 rounded-xl transition"><i class="fa-solid fa-rotate-left mr-1"></i> Reset</button>
+            </div>
+            <p id="hist-admin-summary" class="text-[11px] text-slate-500 font-semibold mb-3"></p>
+            <div id="admin-completed-container" class="space-y-3">
+            </div>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB 1: STOK INDUK -->
+        <div id="admin-sec-katalog" class="hidden space-y-6">
+          <div class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+            <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 class="text-base sm:text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                  <i class="fa-solid fa-boxes-packing text-purple-600"></i> 1. Katalog & Stok Induk
+                </h3>
+                <p class="text-[11px] sm:text-xs text-slate-500">Pengurusan item, tambah stok baharu, dan eksport/import CSV</p>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                <button type="button" onclick="exportItemsToCSV()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-2 rounded-xl transition shadow flex items-center gap-1.5">
+                  <i class="fa-solid fa-file-excel"></i> Eksport CSV
+                </button>
+
+                <label class="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-3 py-2 rounded-xl transition shadow flex items-center gap-1.5 cursor-pointer">
+                  <i class="fa-solid fa-file-import"></i> Import CSV
+                  <input type="file" id="csv-file-input" accept=".csv" onchange="importItemsFromCSV(event)" class="hidden">
+                </label>
+
+                <button type="button" onclick="openItemModal()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow flex items-center gap-1.5 whitespace-nowrap">
+                  <i class="fa-solid fa-plus"></i> Tambah Item Baru
+                </button>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl">
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-bold text-slate-600">Papar:</span>
+                <select id="master-page-size" onchange="changeMasterPageSize(this.value)" class="bg-white border border-slate-200 text-xs font-bold text-purple-800 rounded-lg p-1.5 focus:outline-none cursor-pointer">
+                  <option value="15">15 item</option>
+                  <option value="25" selected>25 item</option>
+                  <option value="50">50 item</option>
+                  <option value="100">100 item</option>
+                  <option value="all">Semua (Penuh)</option>
+                </select>
+              </div>
+
+              <div class="flex items-center gap-2 flex-grow sm:flex-grow-0">
+                <div class="relative w-full sm:w-56">
+                  <i class="fa-solid fa-search absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                  <input type="text" id="master-search" onkeyup="masterPage = 1; renderMasterTable();" placeholder="Cari SKU, Nama, Sub-Kategori..." class="pl-9 pr-3 py-1.5 bg-white border border-slate-200 text-xs rounded-xl w-full focus:ring-2 focus:ring-purple-500 font-medium">
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Notis: kategori gabungan "Alat Tulis & Bekalan Am" perlu dipisahkan -->
+            <div id="split-cat-banner" class="hidden flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-amber-50 border border-amber-300 rounded-xl p-3">
+              <p class="text-xs font-bold text-amber-900"><i class="fa-solid fa-code-branch mr-1"></i> <span id="split-cat-banner-text"></span></p>
+              <button type="button" onclick="openSplitCategoryModal()" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow whitespace-nowrap">
+                <i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Semak &amp; Pisahkan
+              </button>
+            </div>
+
+            <!-- Tab kategori (dijana daripada data) -->
+            <div id="master-cat-tabs" class="flex flex-wrap gap-1.5"></div>
+
+            <div class="overflow-x-auto border border-slate-200 rounded-xl">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                    <th class="p-3 text-center w-12">Bil.</th>
+                    <th class="p-3">SKU</th>
+                    <th class="p-3">Perihal Barang</th>
+                    <th class="p-3">Kategori (Sub)</th>
+                    <th class="p-3 text-center">Unit</th>
+                    <th class="p-3 text-right">Harga (RM)</th>
+                    <th class="p-3 text-center">Baki</th>
+                    <th class="p-3 text-center">Reorder</th>
+                    <th class="p-3 text-center">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="master-item-body" class="divide-y divide-slate-100 font-medium text-slate-700">
+                </tbody>
+              </table>
+            </div>
+
+            <div id="master-pagination-container" class="p-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            </div>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB 2: SENARAI ITEM PERLU REORDER -->
+        <div id="admin-sec-reorder" class="hidden space-y-6">
+          <div id="reorder-section-card" class="bg-white rounded-2xl shadow-sm border-2 border-rose-300 overflow-hidden">
+            <div class="p-4 sm:p-5 bg-gradient-to-r from-rose-900 via-rose-800 to-rose-950 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-white/10 rounded-xl text-rose-300">
+                  <i class="fa-solid fa-triangle-exclamation text-xl sm:text-2xl animate-pulse"></i>
+                </div>
+                <div>
+                  <h3 class="text-xs sm:text-base font-black tracking-wide flex items-center gap-2">
+                    <span>2. SENARAI ITEM PERLU REORDER (PARAS MINIMUM)</span>
+                    <span id="reorder-count-badge" class="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow">0 ITEM</span>
+                  </h3>
+                  <p class="text-[11px] sm:text-xs text-rose-200">Senarai item yang berada di bawah atau pada paras minimum stok</p>
+                </div>
+              </div>
+            </div>
+
+            <div id="reorder-cat-tabs" class="flex flex-wrap gap-1.5 p-3 bg-rose-50 border-b border-rose-200"></div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-rose-950 text-rose-200 font-bold uppercase tracking-wider">
+                    <th class="p-3">Kod / SKU</th>
+                    <th class="p-3">Perihal Barang</th>
+                    <th class="p-3">Kategori</th>
+                    <th class="p-3 text-center">Baki</th>
+                    <th class="p-3 text-center">Min (Reorder)</th>
+                    <th class="p-3 text-center">Kekurangan</th>
+                    <th class="p-3 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="reorder-table-body" class="divide-y divide-rose-100 font-medium text-slate-800">
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB: PENGURUSAN PEGAWAI PELULUS -->
+        <div id="admin-sec-pelulus" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-users-gear text-purple-600"></i> Pengurusan Pengguna
+              </h3>
+              <p class="text-xs text-slate-500">Hanya e-mel yang didaftarkan di sini boleh log masuk. Pelulus boleh meluluskan permohonan; Pemohon hanya boleh memohon stok.</p>
+            </div>
+            <button type="button" onclick="openApproverModal()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow-md flex items-center gap-2">
+              <i class="fa-solid fa-plus"></i> Tambah Pengguna
+            </button>
+          </div>
+
+          <div class="overflow-x-auto border border-slate-200 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                  <th class="p-3">Nama</th>
+                  <th class="p-3">Jawatan / Gred</th>
+                  <th class="p-3">Alamat E-mel</th>
+                  <th class="p-3">Peranan</th>
+                  <th class="p-3">Kategori Boleh Diluluskan</th>
+                  <th class="p-3 text-center">Tindakan</th>
+                </tr>
+              </thead>
+              <tbody id="approvers-master-body" class="divide-y divide-slate-100 font-medium">
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB: LPO -->
+        <div id="admin-sec-lpo" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-6">
+          <div>
+            <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2 mb-1">
+              <i class="fa-solid fa-cart-flatbed text-blue-600"></i> Rekod & Pesanan LPO
+            </h3>
+            <p class="text-xs text-slate-500">Buat pesanan bekalan stok baru melalui LPO dan sahkan penerimaan stok</p>
+          </div>
+
+          <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+            <h4 class="text-xs font-bold uppercase text-slate-700 tracking-wider">Borang Pesanan LPO Baru</h4>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label class="block text-[11px] font-bold text-slate-600 mb-1">No. LPO <span class="text-rose-500">*</span></label>
+                <input type="text" id="lpo-no" placeholder="Cth: LPO-2026-089" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+              </div>
+              <div>
+                <label class="block text-[11px] font-bold text-slate-600 mb-1">Pembekal <span class="text-rose-500">*</span></label>
+                <select id="lpo-pembekal" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+                </select>
+              </div>
+              <div>
+                <label class="block text-[11px] font-bold text-slate-600 mb-1">Tarikh Pesanan <span class="text-rose-500">*</span></label>
+                <input type="date" id="lpo-tarikh" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-slate-200">
+              <label class="block text-[11px] font-bold text-slate-600 mb-1">Tambah Item Pesanan</label>
+              <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                <div class="sm:col-span-7">
+                  <select id="lpo-item-select" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+                  </select>
+                </div>
+                <div class="sm:col-span-3">
+                  <input type="number" id="lpo-item-qty" min="1" value="1" placeholder="Qty" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+                </div>
+                <div class="sm:col-span-2">
+                  <button type="button" onclick="addLpoDraftItem()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs p-2 rounded-lg transition shadow flex items-center justify-center gap-1">
+                    <i class="fa-solid fa-plus"></i> Tambah
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr class="bg-slate-200 text-slate-700 font-bold uppercase">
+                    <th class="p-2">SKU</th>
+                    <th class="p-2">Item</th>
+                    <th class="p-2 text-center">Kuantiti Dipesan</th>
+                    <th class="p-2 text-center">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="lpo-draft-body" class="divide-y divide-slate-200 bg-white">
+                </tbody>
+              </table>
+            </div>
+
+            <button type="button" onclick="submitLpoOrder()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition shadow flex items-center gap-1">
+              <i class="fa-solid fa-paper-plane"></i> Hantar Pesanan LPO
+            </button>
+          </div>
+
+          <div class="overflow-x-auto border border-slate-200 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                  <th class="p-3">No. LPO</th>
+                  <th class="p-3">Pembekal</th>
+                  <th class="p-3">Tarikh Pesanan</th>
+                  <th class="p-3">Senarai Item Dipesan</th>
+                  <th class="p-3 text-center">Status</th>
+                  <th class="p-3 text-center">Tindakan Penerimaan</th>
+                </tr>
+              </thead>
+              <tbody id="lpo-master-body" class="divide-y divide-slate-100 font-medium">
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB: PEMBEKAL -->
+        <div id="admin-sec-pembekal" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-truck-field text-purple-600"></i> Direktori Pembekal
+              </h3>
+              <p class="text-xs text-slate-500">Pengurusan maklumat perhubungan syarikat pembekal stor</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="openPembekalModal()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow-md flex items-center gap-2">
+                <i class="fa-solid fa-plus"></i> Tambah Pembekal Baru
+              </button>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto border border-slate-200 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                  <th class="p-3">Nama Pembekal</th>
+                  <th class="p-3">No. Telefon</th>
+                  <th class="p-3">E-mel</th>
+                  <th class="p-3">Alamat Syarikat</th>
+                  <th class="p-3 text-center">Tindakan</th>
+                </tr>
+              </thead>
+              <tbody id="pembekal-master-body" class="divide-y divide-slate-100 font-medium">
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB: LAPORAN & ANALISIS KEW.PS-14 (Format Gambar 3 & 4) -->
+        <div id="admin-sec-laporan" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-6">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-file-invoice-dollar text-purple-600"></i> Laporan Kedudukan Semasa Stok (KEW.PS-14)
+              </h3>
+              <p class="text-xs text-slate-500">Penjanaan laporan rasmi KEW.PS-14 mengikut kategori item berserta suntingan nilai manual</p>
+            </div>
+            
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="generateAndPrintKewPs14()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow flex items-center gap-1.5">
+                <i class="fa-solid fa-print"></i> Cetak KEW.PS-14
+              </button>
+            </div>
+          </div>
+
+          <!-- Borang Carian & Penapis KEW.PS-14 -->
+          <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+              <div>
+                <label class="block text-xs font-bold text-slate-700 mb-1">Tahun Laporan <span class="text-rose-500">*</span></label>
+                <select id="kewps14-year-select" onchange="renderKewPs14Table(true)" class="w-full bg-white border border-slate-300 rounded-xl p-2.5 text-xs font-bold">
+                  <option value="2026" selected>2026</option>
+                  <option value="2025">2025</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-xs font-bold text-slate-700 mb-1">Kategori Stok <span class="text-rose-500">*</span></label>
+                <select id="kewps14-cat-select" onchange="renderKewPs14Table(true)" class="w-full bg-white border border-slate-300 rounded-xl p-2.5 text-xs font-bold">
+                  <option value="Bahan Pergigian (Kontrak)" selected>Bahan Pergigian (Kontrak)</option>
+                  <option value="Bahan Pergigian (Bukan Kontrak)">Bahan Pergigian (Bukan Kontrak)</option>
+                  <option value="Alat Tulis">Alat Tulis</option>
+                  <option value="Bekalan Am">Bekalan Am</option>
+                  <option value="Bahan Promosi">Bahan Promosi</option>
+                </select>
+              </div>
+
+              <div>
+                <button type="button" onclick="renderKewPs14Table(true)" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2.5 rounded-xl transition shadow flex items-center justify-center gap-1.5">
+                  <i class="fa-solid fa-calculator"></i> Kirakan Nilai Automatik
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Jadual KEW.PS-14 Format Gambar 3, 4 & 5 -->
+          <div class="overflow-x-auto border border-slate-300 rounded-xl bg-white p-4 shadow-inner">
+            <div class="flex justify-between items-start text-[11px] font-semibold text-slate-600 mb-2">
+              <div>Pekeliling Perbendaharaan Malaysia</div>
+              <div>AM 6.3 Lampiran D</div>
+            </div>
+
+            <div class="text-center font-black text-slate-900 mb-4">
+              <h3 class="text-base uppercase">LAPORAN KEDUDUKAN SEMASA STOK TAHUN <span id="kewps14-display-year">2026</span></h3>
+              <p class="text-xs uppercase text-purple-900 font-extrabold mt-0.5">KEW.PS-14</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 text-xs font-bold text-slate-800 mb-3 space-y-1 sm:space-y-0">
+              <div>KEMENTERIAN/JABATAN : <input type="text" id="kewps14-input-jabatan" value="PERKHIDMATAN PERGIGIAN DAERAH KUALA KRAI" class="border-b border-slate-400 font-bold px-1 focus:outline-none w-2/3"></div>
+              <div>KATEGORI STOR : <input type="text" id="kewps14-input-stor" value="STOR UNIT UTAMA" class="border-b border-slate-400 font-bold px-1 focus:outline-none w-2/3"></div>
+            </div>
+
+            <table class="w-full min-w-[820px] text-left border-collapse border border-slate-900 text-xs font-medium">
+              <thead>
+                <tr class="bg-slate-200 text-slate-900 text-center font-bold border-b border-slate-900">
+                  <th rowspan="3" class="p-2 border-r border-slate-900 w-32">TAHUN SEMASA</th>
+                  <th colspan="4" class="p-2 border-r border-slate-900 uppercase">KEDUDUKAN STOK</th>
+                  <th rowspan="3" class="p-2 w-48 uppercase">KADAR PUSINGAN STOK<br><br><span class="text-[10px] font-semibold">c / [(a + d) ÷ 2]</span></th>
+                </tr>
+                <tr class="bg-slate-100 text-slate-900 text-center font-bold border-b border-slate-900">
+                  <th class="p-1.5 border-r border-slate-900">Sedia Ada</th>
+                  <th class="p-1.5 border-r border-slate-900">Penerimaan</th>
+                  <th class="p-1.5 border-r border-slate-900">Pengeluaran</th>
+                  <th class="p-1.5 border-r border-slate-900">Stok Semasa</th>
+                </tr>
+                <tr class="bg-slate-50 text-slate-900 text-center font-bold border-b border-slate-900">
+                  <th class="p-1 border-r border-slate-900 text-[10px]">Jumlah Nilai Stok (RM)<br>(a)</th>
+                  <th class="p-1 border-r border-slate-900 text-[10px]">Jumlah Nilai Stok (RM)<br>(b)</th>
+                  <th class="p-1 border-r border-slate-900 text-[10px]">Jumlah Nilai Stok (RM)<br>(c)</th>
+                  <th class="p-1 border-r border-slate-900 text-[10px]">Jumlah Nilai Stok (RM)<br>d = (a+b)-(c)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-900 border-b border-slate-900 text-slate-900 font-bold">
+                <!-- Baki Bawa Hadapan Row (Gambar 4) -->
+                <tr class="bg-slate-50">
+                  <td class="p-2 border-r border-slate-900">Baki Bawa Hadapan</td>
+                  <td colspan="3" class="p-2 border-r border-slate-900 text-slate-500 font-semibold italic text-center">Baki Stok Akhir Tahun Lepas :</td>
+                  <td class="p-1.5 border-r border-slate-900 text-right"><input type="number" step="0.01" id="kewps14-baki-hadapan" oninput="onKewPs14ManualEdit()" value="0.00" class="w-full text-right bg-amber-50 font-black border border-amber-300 rounded p-1"></td>
+                  <td class="bg-slate-200"></td>
+                </tr>
+
+                <!-- Suku Tahun Pertama -->
+                <tr>
+                  <td class="p-2 border-r border-slate-900 font-bold">Suku Tahun Pertama</td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q1-a" readonly tabindex="-1" title="Automatik: Stok Semasa suku sebelumnya" class="w-full text-right font-bold bg-slate-100 p-1"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q1-b" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q1-c" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q1-d" readonly tabindex="-1" class="w-full text-right font-black bg-slate-100 p-1"></td>
+                  <td id="kewps14-q1-kadar" class="p-2 text-center font-black text-purple-900">0.00</td>
+                </tr>
+
+                <!-- Suku Tahun Kedua -->
+                <tr>
+                  <td class="p-2 border-r border-slate-900 font-bold">Suku Tahun Kedua</td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q2-a" readonly tabindex="-1" title="Automatik: Stok Semasa suku sebelumnya" class="w-full text-right font-bold bg-slate-100 p-1"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q2-b" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q2-c" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q2-d" readonly tabindex="-1" class="w-full text-right font-black bg-slate-100 p-1"></td>
+                  <td id="kewps14-q2-kadar" class="p-2 text-center font-black text-purple-900">0.00</td>
+                </tr>
+
+                <!-- Suku Tahun Ketiga -->
+                <tr>
+                  <td class="p-2 border-r border-slate-900 font-bold">Suku Tahun Ketiga</td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q3-a" readonly tabindex="-1" title="Automatik: Stok Semasa suku sebelumnya" class="w-full text-right font-bold bg-slate-100 p-1"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q3-b" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q3-c" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q3-d" readonly tabindex="-1" class="w-full text-right font-black bg-slate-100 p-1"></td>
+                  <td id="kewps14-q3-kadar" class="p-2 text-center font-black text-purple-900">0.00</td>
+                </tr>
+
+                <!-- Suku Tahun Keempat -->
+                <tr>
+                  <td class="p-2 border-r border-slate-900 font-bold">Suku Tahun Keempat</td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q4-a" readonly tabindex="-1" title="Automatik: Stok Semasa suku sebelumnya" class="w-full text-right font-bold bg-slate-100 p-1"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q4-b" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q4-c" oninput="onKewPs14ManualEdit()" class="w-full text-right font-bold bg-white p-1 border border-slate-300 rounded"></td>
+                  <td class="p-1 border-r border-slate-900"><input type="number" step="0.01" id="kewps14-q4-d" readonly tabindex="-1" class="w-full text-right font-black bg-slate-100 p-1"></td>
+                  <td id="kewps14-q4-kadar" class="p-2 text-center font-black text-purple-900">0.00</td>
+                </tr>
+
+                <!-- Nilai Tahunan Row -->
+                <tr class="bg-purple-50 font-black">
+                  <td class="p-2.5 border-r border-slate-900 uppercase">Nilai Tahunan</td>
+                  <td class="bg-slate-200 border-r border-slate-900"></td>
+                  <td class="p-2 border-r border-slate-900 text-right text-purple-900" id="kewps14-total-b">RM 0.00</td>
+                  <td class="p-2 border-r border-slate-900 text-right text-purple-900" id="kewps14-total-c">RM 0.00</td>
+                  <td class="p-2 border-r border-slate-900 text-center uppercase text-slate-700">Kadar Pusingan Stok Tahunan</td>
+                  <td class="p-2 text-center text-lg font-black text-emerald-800" id="kewps14-kadar-pusingan">0.00</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p id="kewps14-manual-note" class="hidden mt-3 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+              <i class="fa-solid fa-pen mr-1"></i> Nilai telah disunting secara manual. Tekan <b>Kirakan Nilai Automatik</b> untuk kembali kepada nilai daripada rekod sistem.
+            </p>
+
+            <div class="mt-3 text-[11px] text-slate-600 font-semibold space-y-1">
+              <p><b>Nota Formula Pengiraan:</b></p>
+              <p>• Stok Semasa (d) = (a + b) − c</p>
+              <p>• Sedia Ada (a) bagi setiap suku tahun = Stok Semasa (d) suku tahun sebelumnya. Suku pertama bermula daripada Baki Bawa Hadapan.</p>
+              <p>• Kadar Pusingan Stok Sukuan = Pengeluaran suku (c) ÷ [(Sedia Ada suku (a) + Stok Semasa suku (d)) ÷ 2]</p>
+              <p>• Kadar Pusingan Stok Tahunan = Jumlah Pengeluaran Tahunan (c) ÷ [(Baki Bawa Hadapan + Stok Semasa Akhir Tahun) ÷ 2]</p>
+              <p>• Penerimaan (b) = LPO yang disahkan terima; Pengeluaran (c) = permohonan yang diluluskan (mengikut tarikh kelulusan). Nilai = kuantiti × harga seunit dalam Stok Induk.</p>
+              <p>• Baki Bawa Hadapan dianggarkan automatik daripada nilai stok semasa; boleh disunting jika berbeza dengan rekod rasmi.</p>
+            </div>
+          </div>
+
+          <!-- PENERIMAAN & PENGELUARAN BULANAN -->
+          <div class="border border-slate-300 rounded-xl bg-white p-4 shadow-inner space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h4 class="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+                  <i class="fa-solid fa-calendar-days text-purple-600"></i> Penerimaan &amp; Pengeluaran Bulanan
+                </h4>
+                <p class="text-[11px] text-slate-500">Dijana automatik bagi tahun &amp; kategori yang dipilih di atas. Klik <b>Lihat</b> untuk butiran item setiap bulan.</p>
+              </div>
+              <button type="button" onclick="printMonthlyMovementReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow flex items-center gap-1.5 whitespace-nowrap">
+                <i class="fa-solid fa-print"></i> Cetak Laporan Bulanan
+              </button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[760px] text-left border-collapse border border-slate-300 text-xs">
+                <thead class="bg-slate-900 text-amber-400 font-bold uppercase text-[10px]">
+                  <tr>
+                    <th class="p-2">Bulan</th>
+                    <th class="p-2 text-right">Sedia Ada (a)</th>
+                    <th class="p-2 text-right">Penerimaan (b)</th>
+                    <th class="p-2 text-right">Pengeluaran (c)</th>
+                    <th class="p-2 text-right">Stok Semasa (d)</th>
+                    <th class="p-2 text-center">Kadar Pusingan</th>
+                    <th class="p-2 text-center">Transaksi</th>
+                    <th class="p-2 text-center">Butiran</th>
+                  </tr>
+                </thead>
+                <tbody id="kewps14-monthly-body"></tbody>
+              </table>
+            </div>
+            <div id="kewps14-month-detail" class="hidden"></div>
+          </div>
+        </div>
+
+        <!-- ADMIN SUBTAB: JEJAK AUDIT -->
+        <div id="admin-sec-audit" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-clock-rotate-left text-purple-600"></i> Log Jejak Audit (Audit Trail)
+              </h3>
+              <p class="text-xs text-slate-500">Rekod kronologi aktiviti pengguna dan perubahan stok dalam sistem</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" id="legacy-backup-btn" onclick="downloadLegacyLocalBackup()" class="hidden bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs px-3 py-1.5 rounded-lg transition" title="Salinan data 'Mod Tempatan' versi lama yang tersimpan pada peranti ini">
+                <i class="fa-solid fa-download mr-1"></i> Sandaran Tempatan Lama
+              </button>
+              <button type="button" id="audit-clear-btn" onclick="clearAuditTrailLogs()" class="bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-xs px-3 py-1.5 rounded-lg transition">
+                <i class="fa-solid fa-trash mr-1"></i> Bersihkan Log
+              </button>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto border border-slate-200 rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                  <th class="p-3 w-40">Tarikh & Masa</th>
+                  <th class="p-3 w-32">Pengguna (Role)</th>
+                  <th class="p-3 w-36">Jenis Tindakan</th>
+                  <th class="p-3">Butiran / Catatan Aktiviti</th>
+                </tr>
+              </thead>
+              <tbody id="audit-trail-table-body" class="divide-y divide-slate-100 font-medium">
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- MODAL: PEGAWAI PELULUS -->
+  <div id="approver-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 id="approver-modal-title" class="text-base font-black text-slate-800">Tambah Pengguna</h3>
+        <button type="button" onclick="closeApproverModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+
+      <input type="hidden" id="modal-approver-id">
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Nama Penuh <span class="text-rose-500">*</span></label>
+          <input type="text" id="modal-approver-nama" placeholder="Cth: Dr. Noraini Binti Ahmad" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Jawatan / Gred <span class="text-rose-500">*</span></label>
+          <input type="text" id="modal-approver-jawatan" placeholder="Cth: Pakar Pergigian Restoratif UG54" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Alamat E-mel Rasmi (Akses Log Masuk) <span class="text-rose-500">*</span></label>
+          <input type="email" id="modal-approver-email" placeholder="Cth: pelulus1@moh.gov.my" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Peranan <span class="text-rose-500">*</span></label>
+          <select id="modal-approver-role" onchange="onApproverRoleChange()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+            <option value="pemohon">Pemohon (mohon stok sahaja)</option>
+            <option value="pelulus">Pegawai Pelulus (luluskan &amp; urus stok)</option>
+          </select>
+        </div>
+        <div id="modal-approver-cats-wrap">
+          <label class="block font-bold text-slate-700 mb-2">Kategori Stok Boleh Diluluskan <span class="text-rose-500">*</span></label>
+          <div class="space-y-1.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" value="Bahan Pergigian (Kontrak)" class="approver-cat-checkbox w-4 h-4 text-purple-600 rounded">
+              <span>Bahan Pergigian (Kontrak)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" value="Bahan Pergigian (Bukan Kontrak)" class="approver-cat-checkbox w-4 h-4 text-purple-600 rounded">
+              <span>Bahan Pergigian (Bukan Kontrak)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" value="Alat Tulis" class="approver-cat-checkbox w-4 h-4 text-purple-600 rounded">
+              <span>Alat Tulis</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" value="Bekalan Am" class="approver-cat-checkbox w-4 h-4 text-purple-600 rounded">
+              <span>Bekalan Am</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" value="Bahan Promosi" class="approver-cat-checkbox w-4 h-4 text-purple-600 rounded">
+              <span>Bahan Promosi</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 pt-3">
+        <button type="button" onclick="closeApproverModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" onclick="saveApprover()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Simpan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ITEM STOK -->
+  <div id="item-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 id="item-modal-title" class="text-base font-black text-slate-800">Tambah Item Stok Baru</h3>
+        <button type="button" onclick="closeItemModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+
+      <input type="hidden" id="modal-item-id">
+
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Kod / SKU <span class="text-rose-500">*</span></label>
+          <input type="text" id="modal-item-sku" placeholder="Cth: DENT-001" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Perihal Barang (Nama Item) <span class="text-rose-500">*</span></label>
+          <input type="text" id="modal-item-nama" placeholder="Cth: Kertas A4 80GSM Putih" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-bold focus:ring-2 focus:ring-purple-500">
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Kategori Utama</label>
+            <select id="modal-item-kategori" onchange="onModalCategoryChange()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+              <option value="Bahan Pergigian (Kontrak)">Bahan Pergigian (Kontrak)</option>
+              <option value="Bahan Pergigian (Bukan Kontrak)">Bahan Pergigian (Bukan Kontrak)</option>
+              <option value="Alat Tulis">Alat Tulis</option>
+              <option value="Bekalan Am">Bekalan Am</option>
+              <option value="Bahan Promosi">Bahan Promosi</option>
+            </select>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="block text-xs font-bold text-slate-700">Sub-Kategori</label>
+              <button type="button" onclick="showInlineSubCatInput()" class="text-[11px] font-extrabold text-purple-700 hover:text-purple-900 flex items-center gap-1">
+                <i class="fa-solid fa-plus-circle"></i> Tambah
+              </button>
+            </div>
+            <select id="modal-item-subkategori" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            </select>
+
+            <div id="inline-subcat-box" class="hidden mt-2 p-2 bg-purple-50 border border-purple-200 rounded-xl space-y-2">
+              <label class="block text-[10px] font-extrabold text-purple-900 uppercase">Nama Sub-Kategori Baharu</label>
+              <div class="flex items-center gap-1.5">
+                <input type="text" id="inline-subcat-input" placeholder="Cth: Restoratif" class="w-full bg-white border border-purple-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+                <button type="button" onclick="saveInlineSubCategory()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg transition shadow">Simpan</button>
+                <button type="button" onclick="hideInlineSubCatInput()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs px-2 py-1.5 rounded-lg transition">Batal</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Harga Seunit (RM)</label>
+            <input type="number" step="0.01" id="modal-item-harga" placeholder="0.00" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="block text-xs font-bold text-slate-700">Unit Pembungkusan</label>
+              <button type="button" onclick="showInlineUnitInput()" class="text-[11px] font-extrabold text-purple-700 hover:text-purple-900 flex items-center gap-1">
+                <i class="fa-solid fa-plus-circle"></i> Tambah
+              </button>
+            </div>
+            <select id="modal-item-unit" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            </select>
+
+            <div id="inline-unit-box" class="hidden mt-2 p-2 bg-purple-50 border border-purple-200 rounded-xl space-y-2">
+              <label class="block text-[10px] font-extrabold text-purple-900 uppercase">Nama Unit Pembungkusan Baharu</label>
+              <div class="flex items-center gap-1.5">
+                <input type="text" id="inline-unit-input" placeholder="Cth: Box, Syringe" class="w-full bg-white border border-purple-300 rounded-lg p-1.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+                <button type="button" onclick="saveInlineUnit()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg transition shadow">Simpan</button>
+                <button type="button" onclick="hideInlineUnitInput()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs px-2 py-1.5 rounded-lg transition">Batal</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Min / Reorder Level</label>
+            <input type="number" id="modal-item-reorder" min="0" value="5" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Baki Stok Semasa</label>
+            <input type="number" id="modal-item-baki" min="0" value="0" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+        <button type="button" onclick="closeItemModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" onclick="saveItem()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition shadow flex items-center gap-1">
+          <i class="fa-solid fa-floppy-disk"></i> Simpan Item
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PEMBEKAL -->
+  <div id="pembekal-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 id="pembekal-modal-title" class="text-base font-black text-slate-800">Tambah Pembekal Baru</h3>
+        <button type="button" onclick="closePembekalModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+
+      <input type="hidden" id="modal-pembekal-id">
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Nama Pembekal / Syarikat <span class="text-rose-500">*</span></label>
+          <input type="text" id="modal-pembekal-nama" placeholder="Cth: Syarikat Bekalan Medical Sdn Bhd" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">No. Telefon</label>
+          <input type="text" id="modal-pembekal-telefon" placeholder="Cth: 09-9999999" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">E-mel</label>
+          <input type="email" id="modal-pembekal-email" placeholder="Cth: pembekal@gmail.com" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+        </div>
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Alamat Syarikat</label>
+          <textarea id="modal-pembekal-alamat" rows="2" placeholder="Alamat penuh..." class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium"></textarea>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 pt-3">
+        <button type="button" onclick="closePembekalModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" onclick="savePembekal()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Simpan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CONFIRMATION -->
+  <div id="confirm-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 text-center space-y-4">
+      <div class="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-xl">
+        <i class="fa-solid fa-circle-question"></i>
+      </div>
+      <div>
+        <h3 id="confirm-modal-title" class="text-base font-black text-slate-800 mb-1">Sahkan Tindakan</h3>
+        <p id="confirm-modal-msg" class="text-xs text-slate-500 font-medium"></p>
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button type="button" id="confirm-btn-cancel" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" id="confirm-btn-ok" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Ya, Sahkan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: KEW.PS-8 PREVIEW (FORMAT DIBERSIHKAN DARIPADA 3 TEXT BOTTOM) -->
+  <div id="kewps8-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full max-h-[90vh] flex flex-col">
+      <div class="p-4 border-b border-slate-100 flex items-center justify-between no-print">
+        <h3 class="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-file-pdf text-rose-600"></i> Pratinjau & Cetak Laporan
+        </h3>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="window.print()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition shadow flex items-center gap-1">
+            <i class="fa-solid fa-print"></i> Cetak PDF
+          </button>
+          <button type="button" onclick="closeKewPs8Modal()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs px-3 py-1.5 rounded-lg transition">
+            Tutup
+          </button>
+        </div>
+      </div>
+
+      <div id="print-area" class="p-8 overflow-y-auto font-sans text-slate-900 text-xs">
+        <div id="kewps8-content">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: PISAHKAN KATEGORI "ALAT TULIS & BEKALAN AM" -->
+  <div id="split-cat-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-4xl w-full max-h-[90vh] flex flex-col">
+      <div class="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+        <div>
+          <h3 class="text-base font-black text-slate-800">Pisahkan "Alat Tulis &amp; Bekalan Am"</h3>
+          <p class="text-xs text-slate-500 mt-0.5">Kategori baharu dicadangkan secara automatik (berdasarkan senarai asal, sub-kategori dan kod SKU). Semak dan ubah jika perlu, kemudian tekan Simpan.</p>
+        </div>
+        <button type="button" onclick="closeSplitCategoryModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+      <div class="px-5 pt-3 flex flex-wrap items-center gap-2 text-[11px] font-bold">
+        <span id="split-cat-summary" class="text-slate-600"></span>
+      </div>
+      <div class="overflow-auto px-5 py-3 flex-grow">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead class="bg-slate-900 text-amber-400 font-bold uppercase text-[10px] sticky top-0">
+            <tr>
+              <th class="p-2">SKU</th>
+              <th class="p-2">Perihal Barang</th>
+              <th class="p-2">Sub-Kategori</th>
+              <th class="p-2">Kategori Baharu</th>
+              <th class="p-2">Asas Cadangan</th>
+            </tr>
+          </thead>
+          <tbody id="split-cat-body" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <div class="flex items-center gap-3 border-t border-slate-100 p-5">
+        <button type="button" onclick="closeSplitCategoryModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition">Batal</button>
+        <button type="button" id="split-cat-save-btn" onclick="saveSplitCategories()" class="flex-1 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs py-2.5 rounded-xl transition shadow">Simpan Pengkategorian</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- POPUP LOADING (semasa menghantar permohonan) -->
+  <div id="loading-overlay" class="hidden fixed inset-0 z-[65] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4" role="alertdialog" aria-live="assertive" aria-busy="true">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 px-8 py-7 max-w-xs w-full text-center space-y-3">
+      <i class="fa-solid fa-spinner fa-spin text-4xl text-purple-600"></i>
+      <p id="loading-overlay-text" class="text-sm font-black text-slate-800">Menghantar permohonan anda...</p>
+      <p class="text-[11px] font-semibold text-slate-500">Sila tunggu. Jangan tutup atau muat semula halaman ini.</p>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-[70] flex flex-col gap-2"></div>
+
+  <!-- SCRIPT PROJEK -->
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+
 </body>
 </html>
