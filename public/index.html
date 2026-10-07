@@ -45,21 +45,61 @@
         size: A4 landscape;
         margin: 10mm;
       }
-      body * {
-        visibility: hidden !important;
+      /* Cetak warna latar (tajuk kategori, baris reorder, dsb.) */
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
-      #print-area, #print-area * {
-        visibility: visible !important;
+      html, body {
+        background: white !important;
+        height: auto !important;
+        min-height: 0 !important;
+        display: block !important;
+      }
+      /* Hanya tetingkap cetakan dicetak; bahagian lain dibuang sepenuhnya (bukan sekadar tidak kelihatan) */
+      body > *:not(#kewps8-modal) {
+        display: none !important;
+      }
+      #kewps8-modal.hidden {
+        display: none !important;
+      }
+      #kewps8-modal:not(.hidden) {
+        position: static !important;
+        display: block !important;
+        inset: auto !important;
+        padding: 0 !important;
+        background: none !important;
+        backdrop-filter: none !important;
+      }
+      /* Buang had ketinggian & tatalan supaya kandungan mengalir ke halaman seterusnya */
+      #kewps8-modal > div {
+        display: block !important;
+        max-height: none !important;
+        max-width: none !important;
+        width: 100% !important;
+        overflow: visible !important;
+        box-shadow: none !important;
+        border: 0 !important;
+        border-radius: 0 !important;
       }
       #print-area {
-        position: absolute !important;
-        left: 0 !important;
-        top: 0 !important;
-        width: 100% !important;
+        position: static !important;
+        overflow: visible !important;
         padding: 0 !important;
         margin: 0 !important;
         background: white !important;
         color: black !important;
+      }
+      /* Jadual merentasi halaman: ulang tajuk, jangan potong baris, jumlah hanya di akhir */
+      #print-area thead {
+        display: table-header-group;
+      }
+      #print-area tfoot {
+        display: table-row-group;
+      }
+      #print-area tr {
+        break-inside: avoid;
+        page-break-inside: avoid;
       }
       .no-print, .no-print * {
         display: none !important;

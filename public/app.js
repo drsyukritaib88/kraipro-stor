@@ -83,8 +83,27 @@ function requestRef(reqId) {
   return db.collection('kraipro_requests').doc(String(reqId));
 }
 
+// Tarikh hari ini (YYYY-MM-DD) mengikut waktu Malaysia, bukan UTC
+// (UTC menyebabkan rekod antara 12:00 malam - 8:00 pagi mendapat tarikh semalam)
 function todayISODate() {
-  return new Date().toISOString().split('T')[0];
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+}
+
+// Paparan tarikh: dd-mm-yyyy (data disimpan sebagai YYYY-MM-DD)
+function formatDate(val) {
+  const s = String(val || '');
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : s;
+}
+
+// Paparan tarikh & masa: dd-mm-yyyy HH:MM (waktu Malaysia)
+function formatDateTime(val) {
+  const d = val instanceof Date ? val : new Date(val);
+  if (!val || isNaN(d.getTime())) return String(val || '');
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(d).map(x => [x.type, x.value]));
+  return `${p.day}-${p.month}-${p.year} ${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
 }
 
 function setSyncBadge(state, text) {
@@ -404,12 +423,30 @@ function addAuditLog(actionType, details) {
 
   db.collection('kraipro_audit').add({
     createdAt: now.toISOString(),
-    timestamp: now.toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' }),
+    timestamp: formatDateTime(now),
     userRole: `${roleName} (${currentUserEmail})`,
     userEmail: currentUserEmail,
     actionType: actionType,
     details: details
   }).catch(err => console.warn('Gagal merekod log audit:', err));
+}
+
+// Masa log audit: dari createdAt (dd-mm-yyyy HH:MM); log migrasi kekalkan teks masa asal
+function auditLogTime(log) {
+  const migrated = String(log.details || '').endsWith('[migrasi]');
+  return !migrated && log.createdAt ? formatDateTime(log.createdAt) : legacyTimestampToDisplay(log.timestamp);
+}
+
+// Tukar teks masa format lama (cth "18/09/2026, 2:05:00 PTG") kepada dd-mm-yyyy HH:MM
+function legacyTimestampToDisplay(text) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(PG|PTG|AM|PM)?/i.exec(String(text || '').trim());
+  if (!m) return text || '';
+  let hour = parseInt(m[4]);
+  const ampm = (m[6] || '').toUpperCase();
+  if ((ampm === 'PTG' || ampm === 'PM') && hour < 12) hour += 12;
+  if ((ampm === 'PG' || ampm === 'AM') && hour === 12) hour = 0;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(m[1])}-${pad(m[2])}-${m[3]} ${pad(hour)}:${m[5]}`;
 }
 
 function renderAuditTrail() {
@@ -423,7 +460,7 @@ function renderAuditTrail() {
 
   tbody.innerHTML = auditLogs.map(log => `
     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
-      <td class="p-3 font-semibold text-slate-500 whitespace-nowrap">${escapeHtml(log.timestamp)}</td>
+      <td class="p-3 font-semibold text-slate-500 whitespace-nowrap">${escapeHtml(auditLogTime(log))}</td>
       <td class="p-3">
         <span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800">${escapeHtml(log.userRole)}</span>
       </td>
@@ -523,7 +560,7 @@ function updateBackupReminder() {
     return;
   }
   const days = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
-  const when = new Date(last).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+  const when = formatDateTime(last);
   el.className = `text-[11px] font-bold mt-1 ${days >= 7 ? 'text-amber-700' : 'text-emerald-700'}`;
   el.textContent = `${days >= 7 ? '⚠ ' : '✓ '}Sandaran terakhir dari peranti ini: ${when} (${days} hari lalu)${days >= 7 ? '. Disyorkan buat sandaran baharu.' : ''}`;
 }
@@ -589,7 +626,7 @@ function openRestoreModal(filename) {
 
   const info = document.getElementById('restore-file-info');
   if (info) {
-    const when = new Date(b.createdAt).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+    const when = formatDateTime(b.createdAt);
     info.textContent = `${filename}: dibuat ${when} oleh ${b.createdBy || '-'}`;
   }
   const body = document.getElementById('restore-summary-body');
@@ -680,7 +717,7 @@ async function confirmRestoreBackup() {
     await commitInBatches(ops);
 
     const c = backupCounts(d);
-    const when = new Date(backup.createdAt).toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+    const when = formatDateTime(backup.createdAt);
     addAuditLog('Pulih Data', `Data dipulihkan daripada sandaran ${when} (${c.items} item, ${c.requests} permohonan, ${c.lpo} LPO, ${c.users} pengguna).`);
     showToast('Data berjaya dipulihkan daripada sandaran.', 'success');
   } catch (err) {
@@ -722,7 +759,7 @@ function exportItemsToCSV() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.setAttribute("href", url);
-  link.setAttribute("download", `KraiPRO_Stok_Induk_${new Date().toISOString().split('T')[0]}.csv`);
+  link.setAttribute("download", `KraiPRO_Stok_Induk_${todayISODate()}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -1702,7 +1739,7 @@ function buildMovementDetailTables(moves) {
     const body = list.length
       ? list.map(mv => `
           <tr class="border-b border-slate-200">
-            <td class="p-1.5 whitespace-nowrap">${escapeHtml(mv.tarikh)}</td>
+            <td class="p-1.5 whitespace-nowrap">${escapeHtml(formatDate(mv.tarikh))}</td>
             <td class="p-1.5 font-bold whitespace-nowrap">${escapeHtml(mv.ref)}</td>
             <td class="p-1.5">${escapeHtml(mv.pihak || '-')}</td>
             <td class="p-1.5 font-bold">${escapeHtml(mv.sku)}</td>
@@ -2353,7 +2390,7 @@ function printMasterCatalogue() {
 
   const query = (document.getElementById('master-search')?.value || '').trim();
   const jabatan = document.getElementById('kewps14-input-jabatan')?.value || DEFAULT_JABATAN;
-  const now = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+  const now = formatDateTime(new Date());
   const cell = 'border border-slate-400 p-1.5';
   const valueOf = (i) => toInt(i.baki) * (parseFloat(i.harga) || 0);
 
@@ -2751,7 +2788,7 @@ function renderAdminRequests() {
           <div>
             <span class="font-black text-purple-900 mr-2">${escapeHtml(r.id)}</span>
             <span class="font-bold text-slate-700">${escapeHtml(r.nama)} (${escapeHtml(r.jawatan)} ${escapeHtml(r.gred)}) - ${escapeHtml(r.unit)}</span>
-            <span class="text-slate-400 text-[10px] ml-2">${escapeHtml(r.tarikh)}</span>
+            <span class="text-slate-400 text-[10px] ml-2">${escapeHtml(formatDate(r.tarikh))}</span>
           </div>
         </div>
         <div class="overflow-x-auto">
@@ -2810,12 +2847,14 @@ function approveRequest(reqId) {
 
           // Kuantiti lulus tidak boleh melebihi baki stok sebenar (elak stok "palsu" bila dibatalkan)
           const invItem = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+          let bakiSediaAda = null;
           if (invItem) {
-            approvedQty = Math.min(approvedQty, Math.max(0, parseInt(invItem.baki) || 0));
-            invItem.baki = (parseInt(invItem.baki) || 0) - approvedQty;
+            bakiSediaAda = parseInt(invItem.baki) || 0;
+            approvedQty = Math.min(approvedQty, Math.max(0, bakiSediaAda));
+            invItem.baki = bakiSediaAda - approvedQty;
           }
 
-          return { ...i, qtyLulus: approvedQty, status: approvedQty > 0 ? 'Lulus' : 'Ditolak' };
+          return { ...i, qtyLulus: approvedQty, bakiSediaAda, status: approvedQty > 0 ? 'Lulus' : 'Ditolak' };
         });
 
         tx.update(requestRef(req.id), {
@@ -3371,7 +3410,7 @@ async function submitRequest() {
 
   const targetEmailStr = targetEmailsList.join(', ');
   const itemListFormatted = submittedItems.map(i => `- ${i.nama} (${i.sku}): ${i.qtyMohon} kuantiti`).join('\n');
-  const fullMessageBody = `PERMOHONAN STOK BARU\n\nNo. Permohonan: ${reqId}\nNama Pemohon: ${nama}\nJawatan/Gred: ${jawatan} (${gred})\nUnit/Klinik: ${unit}\nKategori Item: ${reqCategory}\nTarikh: ${newReq.tarikh}\n\nSENARAI ITEM:\n${itemListFormatted}`;
+  const fullMessageBody = `PERMOHONAN STOK BARU\n\nNo. Permohonan: ${reqId}\nNama Pemohon: ${nama}\nJawatan/Gred: ${jawatan} (${gred})\nUnit/Klinik: ${unit}\nKategori Item: ${reqCategory}\nTarikh: ${formatDate(newReq.tarikh)}\n\nSENARAI ITEM:\n${itemListFormatted}`;
 
   if (window.emailjs) {
     emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
@@ -3380,7 +3419,7 @@ async function submitRequest() {
       applicant_name: nama,
       applicant_jawatan: `${jawatan} (${gred})`,
       applicant_unit: unit,
-      request_date: newReq.tarikh,
+      request_date: formatDate(newReq.tarikh),
       item_list: itemListFormatted,
       from_name: `${nama} (${unit})`,
       message: fullMessageBody,
@@ -3612,7 +3651,7 @@ function createReqCard(r, isCompleted, showDelete = false) {
       <div>
         <span class="text-xs font-black text-purple-900 mr-2">${escapeHtml(r.id)}</span>
         <span class="text-xs font-bold text-slate-700">${escapeHtml(r.nama)} (${escapeHtml(r.jawatan)} ${escapeHtml(r.gred)}) - ${escapeHtml(r.unit)}</span>
-        <span class="text-[10px] text-slate-400 block sm:inline sm:ml-2">${escapeHtml(r.tarikh)}</span>
+        <span class="text-[10px] text-slate-400 block sm:inline sm:ml-2">${escapeHtml(formatDate(r.tarikh))}</span>
       </div>
       <div class="flex items-center gap-2">
         ${actionButtonsHtml}
@@ -3799,7 +3838,7 @@ function confirmLpoReceipt(lpoNo) {
   body.innerHTML = `
     <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
       <div><span class="text-slate-500 font-bold block">Pembekal</span><b>${escapeHtml(lpo.pembekal)}</b>${pb && pb.alamat ? `<span class="block text-slate-500">${escapeHtml(pb.alamat)}</span>` : ''}</div>
-      <div><span class="text-slate-500 font-bold block">Pesanan Kerajaan (PK) / LPO</span><b>${escapeHtml(lpo.no)}</b> · ${escapeHtml(lpo.tarikh)}</div>
+      <div><span class="text-slate-500 font-bold block">Pesanan Kerajaan (PK) / LPO</span><b>${escapeHtml(lpo.no)}</b> · ${escapeHtml(formatDate(lpo.tarikh))}</div>
       <div><span class="text-slate-500 font-bold block">No. Rujukan BTB</span><b class="text-emerald-700">Dijana automatik semasa disahkan</b></div>
     </div>
 
@@ -3976,7 +4015,7 @@ function previewKewPs1(lpoNo) {
   const dash = '…………………………………';
   const cell = 'border border-slate-900 p-1.5';
   const head = 'border border-slate-900 p-1.5 bg-slate-100 font-bold text-center';
-  const fmtDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d).split('-').reverse().join('/') : (d || '');
+  const fmtDate = formatDate;
   const sign = (title, p, note) => `
     <div class="p-3 space-y-0.5 ${note ? '' : 'border-r border-slate-900'}">
       <div class="h-10"></div>
@@ -4085,7 +4124,7 @@ function renderMasterLpoTable() {
 
     const actionBtn = isCompleted
       ? `<div class="flex flex-col items-center gap-1">
-           <span class="text-[10px] text-slate-500 font-bold"><i class="fa-solid fa-calendar-check mr-1 text-emerald-600"></i> Diterima (${escapeHtml(l.tarikhTerima || l.tarikh)})</span>
+           <span class="text-[10px] text-slate-500 font-bold"><i class="fa-solid fa-calendar-check mr-1 text-emerald-600"></i> Diterima (${escapeHtml(formatDate(l.tarikhTerima || l.tarikh))})</span>
            <button type="button" data-no="${escapeHtml(l.no)}" onclick="previewKewPs1(this.dataset.no)" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg shadow whitespace-nowrap"><i class="fa-solid fa-file-pdf mr-1"></i> KEW.PS-1${l.btb && l.btb.no ? ` · ${escapeHtml(l.btb.no)}` : ''}</button>
          </div>`
       : `<button type="button" data-no="${escapeHtml(l.no)}" onclick="confirmLpoReceipt(this.dataset.no)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl transition shadow"><i class="fa-solid fa-box-open mr-1"></i> Sah Terima</button>`;
@@ -4094,7 +4133,7 @@ function renderMasterLpoTable() {
       <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
         <td class="p-3 font-black text-purple-900">${escapeHtml(l.no)}</td>
         <td class="p-3 font-semibold text-slate-800">${escapeHtml(l.pembekal)}</td>
-        <td class="p-3 text-slate-600 font-medium">${escapeHtml(l.tarikh)}</td>
+        <td class="p-3 text-slate-600 font-medium">${escapeHtml(formatDate(l.tarikh))}</td>
         <td class="p-3 font-medium">${l.items.map(i => `<span class="inline-block bg-slate-100 px-2 py-0.5 rounded-md text-[11px] mr-1 mb-1 font-bold text-slate-700">${escapeHtml(i.nama)} (+${toInt(i.qty)}${escapeHtml(i.unit)})</span>`).join('')}</td>
         <td class="p-3 text-center">${statusBadge}</td>
         <td class="p-3 text-center">${actionBtn}</td>
@@ -4106,115 +4145,126 @@ function renderMasterLpoTable() {
 // ------------------------------------------
 // 16. PRATINJAU KEW.PS-8 (DIBERSIHKAN DARIPADA 3 TEXT BOTTOM), LAPORAN BULANAN & CETAK
 // ------------------------------------------
+// KEW.PS-8 (AM 6.5 Lampiran B): tepat 3 item setiap borang; permohonan lebih 3 item dicetak sebagai beberapa borang
+const KEWPS8_ROWS_PER_FORM = 3;
+
 function previewKewPs8(reqId) {
   const req = requests.find(r => r.id === reqId);
-  if (!req) return;
-
   const content = document.getElementById('kewps8-content');
-  if (!content) return;
+  if (!req || !content) return;
 
-  const pelulusNamaFormatted = req.pelulusNama || '________________________';
-  const pelulusJawatanFormatted = req.pelulusJawatan || '________________________';
+  const fmtDate = formatDate;
+  const reqItems = req.items || [];
+  const chunks = [];
+  for (let i = 0; i < Math.max(1, reqItems.length); i += KEWPS8_ROWS_PER_FORM) {
+    chunks.push(reqItems.slice(i, i + KEWPS8_ROWS_PER_FORM));
+  }
 
-  // Format KEW.PS-8 tanpa 3 ayat di bahagian bawah
-  content.innerHTML = `
-    <div class="space-y-4 font-sans text-slate-900 p-2 max-w-[210mm] mx-auto">
-      <div class="flex justify-between items-start text-[11px] font-semibold border-b border-slate-400 pb-2">
-        <div><p class="font-bold text-slate-800">Pekeliling Perbendaharaan Malaysia</p></div>
-        <div class="text-right"><p class="font-semibold text-slate-700">AM 6.5 Lampiran B</p></div>
-      </div>
+  const processed = req.status !== 'Pending';
+  const pemohonJawatan = [req.jawatan, req.gred].filter(Boolean).join(' ');
+  const pelulusNama = processed ? (req.pelulusNama || '') : '';
+  const pelulusJawatan = processed ? (req.pelulusJawatan || '') : '';
+  const pelulusTarikh = processed ? fmtDate(req.tarikhLulus || '') : '';
 
-      <div class="flex justify-between items-end my-2">
-        <div class="flex-grow text-center pl-16">
-          <h2 class="text-base font-black uppercase tracking-wide text-slate-900">BORANG PERMOHONAN STOK</h2>
-          <h3 class="text-xs font-extrabold uppercase tracking-wider text-slate-700">(INDIVIDU KEPADA STOR)</h3>
+  // Gaya: garis biasa & garis tebal pemisah bahagian; fon pengisian kecil
+  const b = 'border border-black';
+  const thick = 'border-r-[3px] border-r-black';
+  const th = `${b} bg-[#d9d9d9] font-bold text-center align-middle px-1 py-1.5 text-[10px] leading-tight`;
+  const td = `${b} px-1 py-1 text-[8.5px] leading-tight align-middle`;
+
+  const signBlock = (title, nama, jawatan, tarikh) => `
+    <p class="font-bold text-[11px]">${title}</p>
+    <div class="h-12"></div>
+    <p class="text-[11px]">…………………………………</p>
+    <p class="text-[11px]">(Tandatangan)</p>
+    <table class="mt-1 text-[11px]">
+      <tr><td class="font-bold pr-6 py-0.5">Nama</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(nama)}</td></tr>
+      <tr><td class="font-bold pr-6 py-0.5">Jawatan</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(jawatan)}</td></tr>
+      <tr><td class="font-bold pr-6 py-0.5">Tarikh</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(tarikh)}</td></tr>
+    </table>`;
+
+  const forms = chunks.map((chunk, formIdx) => {
+    const rows = [];
+    for (let r = 0; r < KEWPS8_ROWS_PER_FORM; r++) {
+      const i = chunk[r];
+      if (!i) {
+        rows.push(`<tr class="h-8">${`<td class="${td}"></td>`.repeat(3)}<td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td><td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td></tr>`);
+        continue;
+      }
+      const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+      // Baki sedia ada: nilai semasa kelulusan jika direkod; jika tiada, anggaran (baki semasa + kuantiti lulus)
+      const baki = (i.bakiSediaAda !== undefined && i.bakiSediaAda !== null)
+        ? toInt(i.bakiSediaAda)
+        : (inv ? toInt(inv.baki) + (i.status === 'Lulus' ? toInt(i.qtyLulus) : 0) : '');
+      const lulus = processed && i.status !== 'Dibatalkan' ? toInt(i.qtyLulus) : '';
+      const catatanPelulus = !processed ? '' :
+        i.status === 'Ditolak' ? 'Tidak diluluskan' :
+        i.status === 'Dibatalkan' ? 'Dibatalkan' :
+        toInt(i.qtyLulus) < toInt(i.qtyMohon) ? 'Lulus sebahagian' : '';
+      rows.push(`
+        <tr class="h-8">
+          <td class="${td} text-center">${escapeHtml(i.sku)}</td>
+          <td class="${td}">${escapeHtml(i.nama)}</td>
+          <td class="${td} text-center">${toInt(i.qtyMohon)}</td>
+          <td class="${td} ${thick}"></td>
+          <td class="${td} text-center">${processed ? baki : ''}</td>
+          <td class="${td} text-center">${lulus}</td>
+          <td class="${td} ${thick}">${escapeHtml(catatanPelulus)}</td>
+          <td class="${td}"></td>
+          <td class="${td}"></td>
+        </tr>`);
+    }
+
+    const formLabel = chunks.length > 1 ? ` <span class="text-[10px] font-normal">(Borang ${formIdx + 1}/${chunks.length})</span>` : '';
+    return `
+      <div class="kewps8-form text-black font-sans" style="${formIdx < chunks.length - 1 ? 'page-break-after: always; break-after: page;' : ''}">
+        <div class="flex justify-between text-[11px]">
+          <p>Pekeliling Perbendaharaan Malaysia</p>
+          <p>AM 6.5 Lampiran B</p>
         </div>
-        <div class="text-right text-xs font-extrabold text-slate-900 leading-tight">
-          <p class="text-sm font-black text-purple-900">KEW.PS-8</p>
-          <p class="mt-1">No. BPSI: <u class="text-slate-900 font-bold">${escapeHtml(req.id)}</u></p>
+        <div class="text-right mt-4">
+          <p class="font-bold text-sm">KEW.PS-8</p>
+          <p class="text-[12px]">No. BPSI : <span class="font-semibold">${escapeHtml(req.id)}</span>${formLabel}</p>
         </div>
-      </div>
+        <div class="text-center font-bold text-[13px] leading-snug mt-2 mb-3">
+          <p>BORANG PERMOHONAN STOK</p>
+          <p>(INDIVIDU KEPADA STOR)</p>
+        </div>
 
-      <table class="w-full text-left border-collapse border border-slate-900 text-[10px]">
-        <thead>
-          <tr class="border-b border-slate-900 text-center font-bold bg-slate-100">
-            <th colspan="4" class="p-1.5 border-r border-slate-900 uppercase">Permohonan</th>
-            <th colspan="3" class="p-1.5 border-r border-slate-900 uppercase">Pegawai Pelulus</th>
-            <th colspan="2" class="p-1.5 uppercase">Perakuan Penerimaan</th>
+        <table class="w-full border-collapse table-fixed border-2 border-black">
+          <colgroup>
+            <col style="width:4.4%"><col style="width:13.8%"><col style="width:7.6%"><col style="width:8.7%">
+            <col style="width:10%"><col style="width:10.2%"><col style="width:11.7%">
+            <col style="width:13.8%"><col style="width:19.8%">
+          </colgroup>
+          <tr>
+            <th colspan="4" class="${th} ${thick}">Permohonan</th>
+            <th colspan="3" class="${th} ${thick}">Pegawai Pelulus</th>
+            <th colspan="2" class="${th}">Perakuan Penerimaan</th>
           </tr>
-          <tr class="border-b border-slate-900 text-center font-bold bg-slate-50">
-            <th class="p-1.5 border-r border-slate-900 w-16">No. Kod</th>
-            <th class="p-1.5 border-r border-slate-900">Perihal Stok</th>
-            <th class="p-1.5 border-r border-slate-900 w-14">Kuantiti Dimohon</th>
-            <th class="p-1.5 border-r border-slate-900 w-16">Catatan</th>
-            <th class="p-1.5 border-r border-slate-900 w-14">Baki Sedia Ada</th>
-            <th class="p-1.5 border-r border-slate-900 w-14">Kuantiti Diluluskan</th>
-            <th class="p-1.5 border-r border-slate-900 w-16">Catatan</th>
-            <th class="p-1.5 border-r border-slate-900 w-14">Kuantiti Diterima</th>
-            <th class="p-1.5 w-16">Catatan</th>
+          <tr>
+            <th class="${th}">No.<br>Kod</th>
+            <th class="${th}">Perihal Stok</th>
+            <th class="${th}">Kuantiti<br>Dimohon</th>
+            <th class="${th} ${thick}">Catatan</th>
+            <th class="${th}">Baki Sedia<br>Ada</th>
+            <th class="${th}">Kuantiti<br>Diluluskan</th>
+            <th class="${th} ${thick}">Catatan</th>
+            <th class="${th}">Kuantiti Diterima</th>
+            <th class="${th}">Catatan</th>
           </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-900 border-b border-slate-900 font-medium">
-          ${req.items.map(i => {
-            const invItem = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
-            const stockAvailable = invItem ? toInt(invItem.baki) : '-';
-            return `
-              <tr>
-                <td class="p-1.5 border-r border-slate-900 text-center font-bold">${escapeHtml(i.sku)}</td>
-                <td class="p-1.5 border-r border-slate-900 font-semibold">${escapeHtml(i.nama)}</td>
-                <td class="p-1.5 border-r border-slate-900 text-center font-bold">${toInt(i.qtyMohon)}</td>
-                <td class="p-1.5 border-r border-slate-900 text-center text-slate-500">-</td>
-                <td class="p-1.5 border-r border-slate-900 text-center font-bold">${stockAvailable}</td>
-                <td class="p-1.5 border-r border-slate-900 text-center font-black text-purple-900">${toInt(i.qtyLulus)}</td>
-                <td class="p-1.5 border-r border-slate-900 text-center font-semibold">${escapeHtml(i.status || '-')}</td>
-                <td class="p-1.5 border-r border-slate-900 text-center font-bold text-emerald-800">${toInt(i.qtyLulus) || ''}</td>
-                <td class="p-1.5 text-center text-slate-500">-</td>
-              </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
+          ${rows.join('')}
+          <tr class="align-top">
+            <td colspan="4" class="${b} ${thick} p-2">${signBlock('Pemohon:', req.nama || '', pemohonJawatan, fmtDate(req.tarikh))}</td>
+            <td colspan="3" class="${b} ${thick} p-2">${signBlock('Pegawai Pelulus:', pelulusNama, pelulusJawatan, pelulusTarikh)}</td>
+            <td colspan="2" class="${b} p-2">${signBlock('Pemohon/ Wakil:', '', '', '')}</td>
+          </tr>
+        </table>
+        <div class="border-t border-slate-500 mt-8"></div>
+      </div>`;
+  });
 
-      <div class="grid grid-cols-3 border border-slate-900 text-[10px] mt-3">
-        <div class="p-2.5 border-r border-slate-900 flex flex-col justify-between h-40">
-          <div>
-            <p class="font-bold">Pemohon:</p>
-            <div class="h-10"></div>
-            <p class="text-slate-500">(Tandatangan)</p>
-          </div>
-          <div class="space-y-0.5 pt-1.5 border-t border-slate-300 font-medium">
-            <p><b>Nama</b> : ${escapeHtml(req.nama)}</p>
-            <p><b>Jawatan</b> : ${escapeHtml(req.jawatan || '-')}${req.gred ? ' (' + escapeHtml(req.gred) + ')' : ''}</p>
-            <p><b>Tarikh</b> : ${escapeHtml(req.tarikh)}</p>
-          </div>
-        </div>
-
-        <div class="p-2.5 border-r border-slate-900 flex flex-col justify-between h-40">
-          <div>
-            <p class="font-bold">Pegawai Pelulus:</p>
-            <div class="h-10"></div>
-            <p class="text-slate-500">(Tandatangan)</p>
-          </div>
-          <div class="space-y-0.5 pt-1.5 border-t border-slate-300 font-medium">
-            <p><b>Nama</b> : ${escapeHtml(pelulusNamaFormatted)}</p>
-            <p><b>Jawatan</b> : ${escapeHtml(pelulusJawatanFormatted)}</p>
-            <p><b>Tarikh</b> : ${escapeHtml(req.tarikh)}</p>
-          </div>
-        </div>
-
-        <div class="p-2.5 flex flex-col justify-between h-40">
-          <div>
-            <p class="font-bold">Pemohon/Wakil:</p>
-            <div class="h-10"></div>
-            <p class="text-slate-500">(Tandatangan)</p>
-          </div>
-          <div class="space-y-0.5 pt-1.5 border-t border-slate-300 font-medium">
-            <p><b>Nama</b> : ________________________</p>
-            <p><b>Jawatan</b> : ________________________</p>
-            <p><b>Tarikh</b> : ________________________</p>
-          </div>
-        </div>
-      </div>
-    </div>`;
+  content.innerHTML = `<div class="max-w-[280mm] mx-auto space-y-10">${forms.join('')}</div>`;
 
   const modal = document.getElementById('kewps8-modal');
   if (modal) modal.classList.remove('hidden');
@@ -4374,7 +4424,7 @@ function updateDashboardStats() {
   if (document.getElementById('stat-low-stock')) document.getElementById('stat-low-stock').innerText = lowStockCount;
 
   // Permohonan bulan ini yang mengandungi sekurang-kurangnya satu item dalam kategori dipilih
-  const currentMonth = new Date().toISOString().substring(0, 7);
+  const currentMonth = todayISODate().substring(0, 7);
   const monthReqs = requests.filter(r => r.tarikh && r.tarikh.startsWith(currentMonth) && (r.items || []).some(requestItemInDashboardCat));
   if (document.getElementById('stat-month-requests')) document.getElementById('stat-month-requests').innerText = monthReqs.length;
 
