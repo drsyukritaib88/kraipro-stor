@@ -2319,6 +2319,128 @@ async function saveSplitCategories() {
   }
 }
 
+// Item Stok Induk mengikut tab kategori & carian semasa, disusun kategori → sub-kategori → SKU
+function getMasterFilteredItems() {
+  const query = (document.getElementById('master-search')?.value || '').toLowerCase().trim();
+  const categoryOrder = sortedCategoryNames(items);
+
+  const sorted = [...items].sort((a, b) =>
+    categoryOrder.indexOf(itemCategoryName(a)) - categoryOrder.indexOf(itemCategoryName(b)) ||
+    itemSubcategoryName(a).localeCompare(itemSubcategoryName(b)) ||
+    String(a.sku).localeCompare(String(b.sku), undefined, { numeric: true, sensitivity: 'base' })
+  );
+
+  return sorted.filter(i => {
+    const matchesQ = !query ||
+      String(i.sku).toLowerCase().includes(query) ||
+      String(i.nama).toLowerCase().includes(query) ||
+      (i.kategori && i.kategori.toLowerCase().includes(query)) ||
+      (i.subkategori && i.subkategori.toLowerCase().includes(query));
+    const matchesCat = !masterCatTab || itemCategoryName(i) === masterCatTab;
+    return matchesQ && matchesCat;
+  });
+}
+
+// Cetak senarai Stok Induk (semua halaman, ikut tab kategori & carian semasa)
+function printMasterCatalogue() {
+  const list = getMasterFilteredItems();
+  const content = document.getElementById('kewps8-content');
+  if (!content) return;
+  if (list.length === 0) {
+    showToast('Tiada item untuk dicetak.', 'error');
+    return;
+  }
+
+  const query = (document.getElementById('master-search')?.value || '').trim();
+  const jabatan = document.getElementById('kewps14-input-jabatan')?.value || DEFAULT_JABATAN;
+  const now = new Date().toLocaleString('ms-MY', { timeZone: 'Asia/Kuala_Lumpur' });
+  const cell = 'border border-slate-400 p-1.5';
+  const valueOf = (i) => toInt(i.baki) * (parseFloat(i.harga) || 0);
+
+  let rows = '';
+  let lastCat = null;
+  let lastSub = null;
+  list.forEach((i, idx) => {
+    const cat = itemCategoryName(i);
+    const sub = itemSubcategoryName(i);
+    if (cat !== lastCat) {
+      const catItems = list.filter(x => itemCategoryName(x) === cat);
+      const catValue = catItems.reduce((s, x) => s + valueOf(x), 0);
+      rows += `<tr><td colspan="9" class="${cell} bg-slate-800 text-white font-black uppercase">${escapeHtml(cat)} <span class="font-semibold normal-case">(${catItems.length} item · RM ${formatRM(catValue)})</span></td></tr>`;
+      lastCat = cat;
+      lastSub = null;
+    }
+    if (sub !== lastSub) {
+      rows += `<tr><td colspan="9" class="${cell} bg-slate-100 font-bold">${escapeHtml(sub)}</td></tr>`;
+      lastSub = sub;
+    }
+    const low = isLowStock(i);
+    rows += `
+      <tr${low ? ' class="bg-rose-50"' : ''}>
+        <td class="${cell} text-center">${idx + 1}</td>
+        <td class="${cell} font-bold break-words">${escapeHtml(i.sku)}</td>
+        <td class="${cell} break-words">${escapeHtml(i.nama)}</td>
+        <td class="${cell} text-center">${escapeHtml(i.unit || '')}</td>
+        <td class="${cell} text-right">${formatRM(i.harga)}</td>
+        <td class="${cell} text-center font-bold">${toInt(i.baki)}</td>
+        <td class="${cell} text-center">${toInt(i.reorder)}</td>
+        <td class="${cell} text-right">${formatRM(valueOf(i))}</td>
+        <td class="${cell} text-center text-[10px] font-bold">${low ? 'PERLU REORDER' : 'Mencukupi'}</td>
+      </tr>`;
+  });
+
+  const totalValue = list.reduce((s, i) => s + valueOf(i), 0);
+  const lowCount = list.filter(isLowStock).length;
+  const scope = [masterCatTab || 'Semua Kategori', query ? `carian "${query}"` : ''].filter(Boolean).join(' · ');
+
+  content.innerHTML = `
+    <div class="font-sans text-slate-900 text-[11px] space-y-3 max-w-[280mm] mx-auto">
+      <div class="text-center border-b border-slate-400 pb-2">
+        <h2 class="text-sm font-black uppercase">Senarai Katalog &amp; Stok Induk</h2>
+        <p class="font-bold">${escapeHtml(jabatan)}</p>
+        <p class="text-slate-600">${escapeHtml(scope)} · Dicetak: ${escapeHtml(now)}</p>
+      </div>
+      <div class="flex flex-wrap gap-4 font-bold">
+        <span>Jumlah item: ${list.length}</span>
+        <span>Perlu reorder: ${lowCount}</span>
+        <span>Jumlah nilai stok: RM ${formatRM(totalValue)}</span>
+      </div>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup>
+          <col style="width:5%"><col style="width:13%"><col style="width:32%"><col style="width:7%">
+          <col style="width:10%"><col style="width:7%"><col style="width:7%"><col style="width:10%"><col style="width:9%">
+        </colgroup>
+        <thead>
+          <tr class="bg-slate-200 font-bold text-center text-[10px] uppercase">
+            <th class="${cell}">Bil.</th>
+            <th class="${cell}">SKU</th>
+            <th class="${cell}">Perihal Barang</th>
+            <th class="${cell}">Unit</th>
+            <th class="${cell}">Harga Seunit (RM)</th>
+            <th class="${cell}">Baki</th>
+            <th class="${cell}">Reorder</th>
+            <th class="${cell}">Nilai Stok (RM)</th>
+            <th class="${cell}">Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr class="font-black bg-slate-100">
+            <td colspan="7" class="${cell} text-right">JUMLAH NILAI STOK</td>
+            <td class="${cell} text-right">${formatRM(totalValue)}</td>
+            <td class="${cell}"></td>
+          </tr>
+        </tfoot>
+      </table>
+      <div class="grid grid-cols-2 gap-8 pt-8">
+        <div><p>…………………………………</p><p>(Disediakan oleh)</p><p>Nama:</p><p>Tarikh:</p></div>
+        <div><p>…………………………………</p><p>(Disemak oleh)</p><p>Nama:</p><p>Tarikh:</p></div>
+      </div>
+    </div>`;
+
+  document.getElementById('kewps8-modal')?.classList.remove('hidden');
+}
+
 function renderMasterTable() {
   const tbody = document.getElementById('master-item-body');
   const pagContainer = document.getElementById('master-pagination-container');
@@ -2329,25 +2451,7 @@ function renderMasterTable() {
   // Kekalkan susunan SKU pada senarai induk (digunakan oleh dropdown lain)
   items.sort((a, b) => String(a.sku).localeCompare(String(b.sku), undefined, { numeric: true, sensitivity: 'base' }));
 
-  const query = (document.getElementById('master-search')?.value || '').toLowerCase().trim();
-  const categoryOrder = sortedCategoryNames(items);
-
-  // Susun: kategori → sub-kategori → SKU, supaya item berkaitan berkumpul
-  const sorted = [...items].sort((a, b) =>
-    categoryOrder.indexOf(itemCategoryName(a)) - categoryOrder.indexOf(itemCategoryName(b)) ||
-    itemSubcategoryName(a).localeCompare(itemSubcategoryName(b)) ||
-    String(a.sku).localeCompare(String(b.sku), undefined, { numeric: true, sensitivity: 'base' })
-  );
-
-  const filtered = sorted.filter(i => {
-    const matchesQ = !query ||
-      String(i.sku).toLowerCase().includes(query) ||
-      String(i.nama).toLowerCase().includes(query) ||
-      (i.kategori && i.kategori.toLowerCase().includes(query)) ||
-      (i.subkategori && i.subkategori.toLowerCase().includes(query));
-    const matchesCat = !masterCatTab || itemCategoryName(i) === masterCatTab;
-    return matchesQ && matchesCat;
-  });
+  const filtered = getMasterFilteredItems();
 
   tbody.innerHTML = '';
 
