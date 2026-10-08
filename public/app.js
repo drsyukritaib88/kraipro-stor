@@ -231,21 +231,44 @@ function startFirestoreListeners() {
     const data = snap.data();
     if (Array.isArray(data.items)) items = data.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, id: String(i.id), baki: toInt(i.baki), reorder: toInt(i.reorder), harga: parseFloat(i.harga) || 0 }));
     if (Array.isArray(data.pembekalList)) pembekalList = data.pembekalList;
-    if (Array.isArray(data.lpoList)) lpoList = data.lpoList.filter(l => l && typeof l === 'object').map(l => ({ ...l, items: Array.isArray(l.items) ? l.items.map(i => ({ ...i, qty: toInt(i.qty) })) : [] }));
+    // LPO format lama (dalam dokumen stok): papar sementara & pindahkan ke koleksi kraipro_lpo
+    legacyStateLpo = Array.isArray(data.lpoList) ? data.lpoList.filter(l => l && typeof l === 'object') : [];
+    if (legacyStateLpo.length && isAdminLoggedIn) migrateLpoToCollection(legacyStateLpo);
+    rebuildLpoList();
     setSyncBadge('ok', 'Cloud Synced');
     renderAll();
   }, (err) => { finishFirstLoad(); onFirestoreError('stok')(err); }));
 
-  // Permohonan: pelulus/SuperAdmin lihat semua, pemohon lihat permohonan sendiri sahaja
-  const reqQuery = isAdminLoggedIn
-    ? db.collection('kraipro_requests')
-    : db.collection('kraipro_requests').where('ownerEmail', '==', currentUserEmail);
-  firestoreUnsubscribers.push(reqQuery.onSnapshot((qs) => {
-    requests = qs.docs.map(d => sanitizeRequest(d.data())).filter(Boolean).sort((a, b) =>
-      String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id))
-    );
-    renderAll();
-  }, onFirestoreError('permohonan')));
+  // Permohonan:
+  //  - Pemohon: permohonan sendiri sahaja
+  //  - Pelulus/SuperAdmin: tahun semasa + tahun lepas, dan SEMUA yang masih Pending (jimat bacaan Firestore);
+  //    permohonan lebih lama dimuatkan hanya apabila diminta (loadOlderRequests)
+  const reqCol = db.collection('kraipro_requests');
+  const toRequests = (qs) => qs.docs.map(d => sanitizeRequest(d.data())).filter(Boolean);
+  if (isAdminLoggedIn) {
+    firestoreUnsubscribers.push(reqCol.where('tarikh', '>=', requestWindowStart()).onSnapshot((qs) => {
+      requestSources.recent = toRequests(qs);
+      rebuildRequests();
+    }, onFirestoreError('permohonan')));
+    firestoreUnsubscribers.push(reqCol.where('status', '==', 'Pending').onSnapshot((qs) => {
+      requestSources.pending = toRequests(qs);
+      rebuildRequests();
+    }, onFirestoreError('permohonan')));
+  } else {
+    firestoreUnsubscribers.push(reqCol.where('ownerEmail', '==', currentUserEmail).onSnapshot((qs) => {
+      requestSources.own = toRequests(qs);
+      rebuildRequests();
+    }, onFirestoreError('permohonan')));
+  }
+
+  // Pesanan LPO (pelulus & SuperAdmin)
+  if (isAdminLoggedIn) {
+    firestoreUnsubscribers.push(db.collection('kraipro_lpo').onSnapshot((qs) => {
+      lpoCollection = qs.docs.map(d => sanitizeLpo({ ...d.data(), id: d.id }));
+      rebuildLpoList();
+      renderAll();
+    }, onFirestoreError('lpo')));
+  }
 
   // Senarai pengguna berdaftar (untuk notifikasi pelulus & pengurusan pengguna)
   firestoreUnsubscribers.push(db.collection('kraipro_users').onSnapshot((qs) => {
@@ -261,6 +284,95 @@ function startFirestoreListeners() {
       auditLogs = qs.docs.map(d => ({ docId: d.id, ...d.data() }));
       renderAuditTrail();
     }, onFirestoreError('audit')));
+  }
+}
+
+// ---- Permohonan: gabungan beberapa sumber (tempoh semasa, Pending, lama, milik sendiri) ----
+const REQUEST_RECENT_YEARS = 2; // tahun semasa + tahun lepas
+let requestSources = { recent: [], pending: [], older: [], own: [] };
+let olderRequestsLoaded = false;
+
+function requestWindowStart() {
+  return `${parseInt(todayISODate().slice(0, 4)) - (REQUEST_RECENT_YEARS - 1)}-01-01`;
+}
+
+function rebuildRequests() {
+  const byId = new Map();
+  [...requestSources.older, ...requestSources.recent, ...requestSources.pending, ...requestSources.own]
+    .forEach(r => byId.set(r.id, r));
+  requests = [...byId.values()].sort((a, b) =>
+    String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id))
+  );
+  renderAll();
+}
+
+// Muat permohonan sebelum tempoh semasa (sekali sahaja, tidak dipantau secara langsung)
+async function loadOlderRequests() {
+  if (!isAdminLoggedIn || olderRequestsLoaded) return;
+  const token = showLoadingOverlay('Memuatkan permohonan lama...');
+  try {
+    const qs = await db.collection('kraipro_requests').where('tarikh', '<', requestWindowStart()).get();
+    requestSources.older = qs.docs.map(d => sanitizeRequest(d.data())).filter(Boolean);
+    olderRequestsLoaded = true;
+    rebuildRequests();
+    showToast(`${requestSources.older.length} permohonan lama dimuatkan.`, 'info');
+  } catch (err) {
+    showToast('Gagal memuatkan permohonan lama: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay(token);
+  }
+}
+
+// ---- LPO: koleksi kraipro_lpo (+ senarai lama dalam dokumen stok semasa peralihan) ----
+let lpoCollection = [];
+let legacyStateLpo = [];
+let lpoMigrationRunning = false;
+
+function sanitizeLpo(l) {
+  return { ...l, items: Array.isArray(l.items) ? l.items.map(i => ({ ...i, qty: toInt(i.qty) })) : [] };
+}
+
+// ID tetap untuk LPO yang dipindahkan, supaya pemindahan berulang tidak mencipta salinan
+function migratedLpoId(l, idx) {
+  const slug = String(l.no || 'lpo').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60);
+  return `mig_${idx}_${slug}`;
+}
+
+function rebuildLpoList() {
+  const known = new Set(lpoCollection.map(l => String(l.no).toLowerCase()));
+  const legacy = legacyStateLpo
+    .map((l, idx) => sanitizeLpo({ ...l, id: migratedLpoId(l, idx), _legacy: true }))
+    .filter(l => !known.has(String(l.no).toLowerCase()));
+  lpoList = [...lpoCollection, ...legacy].sort((a, b) =>
+    String(b.createdAt || b.tarikh || '').localeCompare(String(a.createdAt || a.tarikh || '')) || String(b.no).localeCompare(String(a.no))
+  );
+}
+
+// Pindahkan LPO dari dokumen stok ke koleksi kraipro_lpo (sekali; selamat diulang)
+async function migrateLpoToCollection(legacyList) {
+  if (lpoMigrationRunning || !isAdminLoggedIn) return;
+  lpoMigrationRunning = true;
+  try {
+    const ops = legacyList.map((l, idx) => b => b.set(db.collection('kraipro_lpo').doc(migratedLpoId(l, idx)), {
+      ...l,
+      id: migratedLpoId(l, idx),
+      items: Array.isArray(l.items) ? l.items : [],
+      no: String(l.no || ''),
+      createdAt: l.createdAt || `${l.tarikh || '1970-01-01'}T00:00:00.000Z`,
+      sumberMigrasi: 'live_inventory_state'
+    }));
+    // Batch terakhir juga membuang lpoList dari dokumen stok (atomik dengan baki LPO)
+    ops.push(b => b.update(stateDocRef(), { lpoList: firebase.firestore.FieldValue.delete() }));
+    for (let i = 0; i < ops.length; i += 400) {
+      const batch = db.batch();
+      ops.slice(i, i + 400).forEach(op => op(batch));
+      await batch.commit();
+    }
+    addAuditLog('Migrasi LPO', `${legacyList.length} pesanan LPO dipindahkan ke koleksi berasingan.`);
+  } catch (err) {
+    console.warn('Pemindahan LPO gagal:', err);
+  } finally {
+    lpoMigrationRunning = false;
   }
 }
 
@@ -299,7 +411,6 @@ function syncStateToFirestore() {
   const payload = {
     items: items,
     pembekalList: pembekalList,
-    lpoList: lpoList,
     lastUpdated: new Date().toISOString()
   };
 
@@ -313,17 +424,16 @@ function syncStateToFirestore() {
 }
 
 // Kemas kini stok secara atomik (transaksi) supaya tidak menindih perubahan pengguna lain.
-// `mutator(tx, fresh)` menerima data terkini { items, lpoList } dan boleh mengubahnya terus.
+// `mutator(tx, fresh)` menerima data stok terkini { items } dan boleh mengubahnya terus.
 function runStockTransaction(mutator) {
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(stateDocRef());
     const data = snap.exists ? snap.data() : {};
     const fresh = {
-      items: Array.isArray(data.items) ? data.items : JSON.parse(JSON.stringify(items)),
-      lpoList: Array.isArray(data.lpoList) ? data.lpoList : JSON.parse(JSON.stringify(lpoList))
+      items: Array.isArray(data.items) ? data.items : JSON.parse(JSON.stringify(items))
     };
     const result = await mutator(tx, fresh);
-    tx.set(stateDocRef(), { items: fresh.items, lpoList: fresh.lpoList, lastUpdated: new Date().toISOString() }, { merge: true });
+    tx.set(stateDocRef(), { items: fresh.items, lastUpdated: new Date().toISOString() }, { merge: true });
     return result;
   });
 }
@@ -545,10 +655,10 @@ let pendingRestore = null;
 async function collectFullBackup() {
   const docsOf = async (name) => (await db.collection(name).get()).docs.map(d => ({ id: d.id, ...d.data() }));
   const stateSnap = await stateDocRef().get();
-  const [requestsAll, usersAll, auditAll, countersAll] = await Promise.all([
-    docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters')
+  const [requestsAll, usersAll, auditAll, countersAll, lpoAll] = await Promise.all([
+    docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters'), docsOf('kraipro_lpo')
   ]);
-  const state = stateSnap.exists ? stateSnap.data() : { items: [], pembekalList: [], lpoList: [] };
+  const state = stateSnap.exists ? stateSnap.data() : { items: [], pembekalList: [] };
 
   return {
     format: BACKUP_FORMAT,
@@ -556,8 +666,8 @@ async function collectFullBackup() {
     createdAt: new Date().toISOString(),
     createdBy: currentUserEmail,
     projectId: (firebase.app().options || {}).projectId || '',
-    counts: backupCounts({ state, requests: requestsAll, users: usersAll, audit: auditAll }),
-    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll }
+    counts: backupCounts({ state, requests: requestsAll, users: usersAll, audit: auditAll, lpo: lpoAll }),
+    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll, lpo: lpoAll }
   };
 }
 
@@ -565,11 +675,19 @@ function backupCounts(d) {
   return {
     items: (d.state.items || []).length,
     pembekal: (d.state.pembekalList || []).length,
-    lpo: (d.state.lpoList || []).length,
+    lpo: backupLpoList(d).length,
     requests: d.requests.length,
     users: d.users.length,
     audit: d.audit.length
   };
+}
+
+// LPO dalam sandaran: koleksi kraipro_lpo (baharu) atau lpoList dalam dokumen stok (sandaran lama)
+function backupLpoList(d) {
+  const fromCollection = Array.isArray(d.lpo) ? d.lpo : [];
+  const legacy = Array.isArray(d.state && d.state.lpoList) ? d.state.lpoList.map((l, idx) => ({ ...l, id: migratedLpoId(l, idx) })) : [];
+  const known = new Set(fromCollection.map(l => String(l.no).toLowerCase()));
+  return [...fromCollection, ...legacy.filter(l => !known.has(String(l.no).toLowerCase()))];
 }
 
 function downloadJson(obj, filename) {
@@ -633,6 +751,9 @@ function validateBackup(obj) {
   ['requests', 'users', 'audit', 'counters'].forEach(k => {
     if (!Array.isArray(d[k])) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
   });
+  if (d.lpo !== undefined && !Array.isArray(d.lpo)) throw new Error('Bahagian "lpo" dalam sandaran tidak sah.');
+  const badLpo = (d.lpo || []).find(l => !l || !SAFE_ID_RE.test(String(l.id || '')) || !Array.isArray(l.items));
+  if (badLpo) throw new Error('Terdapat LPO tidak sah dalam sandaran.');
   const badReq = d.requests.find(r => !r || !SAFE_ID_RE.test(String(r.id || '')));
   if (badReq) throw new Error('Terdapat permohonan dengan ID tidak sah dalam sandaran.');
   const badUser = d.users.find(u => !u || !u.id || u.id !== String(u.id).toLowerCase() || u.email !== u.id || !['pelulus', 'pemohon'].includes(u.role));
@@ -746,12 +867,19 @@ async function confirmRestoreBackup() {
       if (a && a.id && !existingAudit.has(a.id)) ops.push(b => b.set(db.collection('kraipro_audit').doc(a.id), strip(a)));
     });
 
-    // 6. Stok, pembekal & LPO (ganti sepenuhnya)
+    // 6. LPO: padam yang tiada dalam sandaran, tulis semula semua dari sandaran
+    const backupLpo = backupLpoList(d);
+    const backupLpoIds = new Set(backupLpo.map(l => String(l.id)));
+    (safety.data.lpo || []).forEach(l => {
+      if (!backupLpoIds.has(String(l.id))) ops.push(b => b.delete(db.collection('kraipro_lpo').doc(String(l.id))));
+    });
+    backupLpo.forEach(l => ops.push(b => b.set(db.collection('kraipro_lpo').doc(String(l.id)), { ...strip(l), id: String(l.id), no: String(l.no || ''), items: Array.isArray(l.items) ? l.items : [] })));
+
+    // 7. Stok & pembekal (ganti sepenuhnya; LPO kini dalam koleksi sendiri)
     const st = d.state;
     ops.push(b => b.set(stateDocRef(), {
       items: st.items || [],
       pembekalList: st.pembekalList || [],
-      lpoList: st.lpoList || [],
       lastUpdated: new Date().toISOString()
     }));
 
@@ -1098,6 +1226,11 @@ function resetSessionState() {
   currentApproverData = null;
   currentUserAllowedCategories = [];
   requests = [];
+  requestSources = { recent: [], pending: [], older: [], own: [] };
+  olderRequestsLoaded = false;
+  lpoCollection = [];
+  legacyStateLpo = [];
+  lpoList = [];
   auditLogs = [];
   appUsers = [];
   approverUsers = [];
@@ -3729,6 +3862,13 @@ function renderRequestHistory(prefix, list) {
   const filtered = list.filter(r => matchesHistoryFilters(r, f));
   const isFiltered = !!(f.search || f.year || f.month || f.status);
 
+  if (prefix === 'hist-admin') {
+    const olderBtn = document.getElementById('hist-admin-load-older');
+    const olderText = document.getElementById('hist-admin-load-older-text');
+    if (olderBtn) olderBtn.classList.toggle('hidden', olderRequestsLoaded || !isAdminLoggedIn);
+    if (olderText) olderText.textContent = `Papar permohonan sebelum ${requestWindowStart().slice(0, 4)}`;
+  }
+
   const summary = document.getElementById(`${prefix}-summary`);
   if (summary) {
     summary.textContent = isFiltered
@@ -3949,17 +4089,29 @@ async function submitLpoOrder() {
     return;
   }
 
+  if (lpoList.some(l => String(l.no).trim().toLowerCase() === lpoNo.toLowerCase())) {
+    showToast(`No. LPO ${lpoNo} telah wujud. Sila semak semula nombor LPO.`, 'error');
+    return;
+  }
+
+  const lpoRef = db.collection('kraipro_lpo').doc();
   const newLpo = {
+    id: lpoRef.id,
     no: lpoNo,
     pembekal: pembekal,
     tarikh: tarikh,
     status: 'Dalam Proses',
-    items: [...draftLpoItems]
+    items: [...draftLpoItems],
+    createdAt: new Date().toISOString(),
+    dibuatOleh: currentUserEmail
   };
 
-  lpoList.unshift(newLpo);
+  const ok = await runWithLoading(`Merekod pesanan LPO ${lpoNo}...`, () => lpoRef.set(newLpo).then(() => true).catch(err => {
+    showToast('Gagal merekod LPO: ' + authErrorMessage(err), 'error');
+    return false;
+  }));
+  if (!ok) return;
   addAuditLog("Pesanan LPO Baru", `Pesanan LPO ${lpoNo} dihantar kepada ${pembekal}.`);
-  const ok = await runWithLoading(`Merekod pesanan LPO ${lpoNo}...`, () => saveState());
 
   draftLpoItems = [];
   if (document.getElementById('lpo-no')) document.getElementById('lpo-no').value = '';
@@ -3972,7 +4124,7 @@ async function submitLpoOrder() {
 // ---- KEW.PS-1: Borang Terimaan Barang-Barang (BTB) ----
 const BTB_JENIS_PENERIMAAN = ['Pembelian', 'Kontrak', 'Pindahan', 'Hadiah / Sumbangan', 'Pulangan', 'Lain-lain'];
 const DEFAULT_JABATAN = 'PERKHIDMATAN PERGIGIAN DAERAH KUALA KRAI';
-let btbPendingLpoNo = '';
+let btbPendingLpoId = '';
 
 // Baris yang benar-benar diterima: ikut BTB jika ada, jika tidak ikut kuantiti LPO
 function lpoReceivedLines(lpo) {
@@ -3986,10 +4138,10 @@ function findPembekal(nama) {
   return pembekalList.find(p => String(p.nama || '').trim().toLowerCase() === String(nama || '').trim().toLowerCase());
 }
 
-function confirmLpoReceipt(lpoNo) {
-  const lpo = lpoList.find(l => l.no === lpoNo);
+function confirmLpoReceipt(lpoId) {
+  const lpo = lpoList.find(l => l.id === lpoId);
   if (!lpo || lpo.status === 'Selesai' || !isAdminLoggedIn) return;
-  btbPendingLpoNo = lpoNo;
+  btbPendingLpoId = lpoId;
 
   const today = todayISODate();
   const nama = (currentUserProfile && currentUserProfile.nama) || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail);
@@ -4091,13 +4243,17 @@ function updateBtbRowTotal(input) {
 
 function closeBtbModal() {
   document.getElementById('btb-modal')?.classList.add('hidden');
-  btbPendingLpoNo = '';
+  btbPendingLpoId = '';
 }
 
 async function confirmBtbReceipt() {
-  const lpoNo = btbPendingLpoNo;
-  const lpo = lpoList.find(l => l.no === lpoNo);
+  const lpoId = btbPendingLpoId;
+  const lpo = lpoList.find(l => l.id === lpoId);
   if (!lpo || !isAdminLoggedIn) return;
+  if (lpo._legacy) {
+    showToast('LPO ini sedang dipindahkan ke format baharu. Sila muat semula halaman dan cuba lagi.', 'error');
+    return;
+  }
 
   const val = (id) => (document.getElementById(id)?.value || '').trim();
   const tarikhTerima = val('btb-tarikh-terima');
@@ -4145,13 +4301,15 @@ async function confirmBtbReceipt() {
     const year = tarikhTerima.slice(0, 4);
     const counterRef = db.collection('kraipro_counters').doc(`btb_${year}`);
 
+    const lpoRef = db.collection('kraipro_lpo').doc(lpoId);
     await runStockTransaction(async (tx, fresh) => {
       const counterSnap = await tx.get(counterRef);
+      const lpoSnap = await tx.get(lpoRef);
       const seq = counterSnap.exists ? (counterSnap.data().seq || 0) + 1 : 1;
       btbNo = `BTB-${year}-${String(seq).padStart(3, '0')}`;
 
-      const freshLpo = fresh.lpoList.find(l => l.no === lpoNo);
-      if (!freshLpo) throw new Error('LPO tidak dijumpai.');
+      if (!lpoSnap.exists) throw new Error('LPO tidak dijumpai.');
+      const freshLpo = lpoSnap.data();
       if (freshLpo.status === 'Selesai') throw new Error('Stok bagi LPO ini telah diterima.');
 
       // Harga direkod pada tarikh terima (untuk rekod KEW.PS-1)
@@ -4162,16 +4320,14 @@ async function confirmBtbReceipt() {
         return { ...l, unit: l.unit || (inv && inv.unit) || '', harga, jumlah: Math.round(harga * l.diterima * 100) / 100 };
       });
 
-      freshLpo.status = 'Selesai';
-      freshLpo.tarikhTerima = tarikhTerima;
-      freshLpo.btb = { ...btbBase, no: btbNo, items: btbItems };
+      tx.update(lpoRef, { status: 'Selesai', tarikhTerima, btb: { ...btbBase, no: btbNo, items: btbItems } });
       tx.set(counterRef, { seq });
     });
 
     const totalDiterima = lines.reduce((s, l) => s + l.diterima, 0);
     addAuditLog("Penerimaan LPO", `Penerimaan stok LPO ${lpo.no} disahkan (${btbNo}, ${totalDiterima} unit diterima).`);
     showToast(`Stok ${lpo.no} diterima. KEW.PS-1 ${btbNo} dijana.`, 'success');
-    setTimeout(() => previewKewPs1(lpoNo), 600); // tunggu data dikemas kini
+    setTimeout(() => previewKewPs1(lpoId), 600); // tunggu data dikemas kini
   } catch (err) {
     showToast('Penerimaan LPO gagal: ' + authErrorMessage(err), 'error');
   } finally {
@@ -4180,8 +4336,8 @@ async function confirmBtbReceipt() {
 }
 
 // Pratonton & cetak KEW.PS-1 (format AM 6.2 Lampiran A)
-function previewKewPs1(lpoNo) {
-  const lpo = lpoList.find(l => l.no === lpoNo);
+function previewKewPs1(lpoId) {
+  const lpo = lpoList.find(l => l.id === lpoId);
   const content = document.getElementById('kewps8-content');
   if (!lpo || !content) return;
 
@@ -4310,9 +4466,9 @@ function renderMasterLpoTable() {
     const actionBtn = isCompleted
       ? `<div class="flex flex-col items-center gap-1">
            <span class="text-[10px] text-slate-500 font-bold"><i class="fa-solid fa-calendar-check mr-1 text-emerald-600"></i> Diterima (${escapeHtml(formatDate(l.tarikhTerima || l.tarikh))})</span>
-           <button type="button" data-no="${escapeHtml(l.no)}" onclick="previewKewPs1(this.dataset.no)" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg shadow whitespace-nowrap"><i class="fa-solid fa-file-pdf mr-1"></i> KEW.PS-1${l.btb && l.btb.no ? ` · ${escapeHtml(l.btb.no)}` : ''}</button>
+           <button type="button" data-id="${escapeHtml(l.id)}" onclick="previewKewPs1(this.dataset.id)" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg shadow whitespace-nowrap"><i class="fa-solid fa-file-pdf mr-1"></i> KEW.PS-1${l.btb && l.btb.no ? ` · ${escapeHtml(l.btb.no)}` : ''}</button>
          </div>`
-      : `<button type="button" data-no="${escapeHtml(l.no)}" onclick="confirmLpoReceipt(this.dataset.no)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl transition shadow"><i class="fa-solid fa-box-open mr-1"></i> Sah Terima</button>`;
+      : `<button type="button" data-id="${escapeHtml(l.id)}" onclick="confirmLpoReceipt(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-1.5 rounded-xl transition shadow"><i class="fa-solid fa-box-open mr-1"></i> Sah Terima</button>`;
 
     return `
       <tr class="border-b border-slate-100 hover:bg-slate-50 transition">

@@ -807,7 +807,10 @@
               </select>
               <button type="button" onclick="resetHistoryFilter('hist-admin')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-2 rounded-xl transition"><i class="fa-solid fa-rotate-left mr-1"></i> Reset</button>
             </div>
-            <p id="hist-admin-summary" class="text-[11px] text-slate-500 font-semibold mb-3"></p>
+            <p id="hist-admin-summary" class="text-[11px] text-slate-500 font-semibold mb-1"></p>
+            <button type="button" id="hist-admin-load-older" onclick="loadOlderRequests()" class="hidden mb-3 text-[11px] font-bold text-purple-700 hover:text-purple-900 hover:underline">
+              <i class="fa-solid fa-clock-rotate-left mr-1"></i> <span id="hist-admin-load-older-text">Papar permohonan lebih lama</span>
+            </button>
             <div id="admin-completed-container" class="space-y-3">
             </div>
           </div>

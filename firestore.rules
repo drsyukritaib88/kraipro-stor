@@ -39,8 +39,23 @@ service cloud.firestore {
     // Stok induk, pembekal & LPO (satu dokumen)
     match /kraipro_store/live_inventory_state {
       allow read: if isMember();
-      allow create, update: if isApprover() && request.resource.data.items is list;
+      // lpoList lama (sebelum LPO dipindahkan ke koleksi sendiri) tidak boleh ditambah/diubah lagi;
+      // hanya boleh kekal sama atau dibuang. Ini menghalang tab lama menulis semula senarai LPO.
+      allow create, update: if isApprover()
+        && request.resource.data.items is list
+        && (!('lpoList' in request.resource.data)
+            || (resource != null && 'lpoList' in resource.data
+                && request.resource.data.lpoList == resource.data.lpoList));
       allow delete: if false;
+    }
+
+    // Pesanan LPO (satu dokumen setiap LPO) - pelulus & SuperAdmin sahaja
+    match /kraipro_lpo/{lpoId} {
+      allow read: if isApprover();
+      allow create, update: if isApprover()
+        && request.resource.data.no is string
+        && request.resource.data.items is list;
+      allow delete: if isSuper();
     }
 
     // Senarai pengguna berdaftar (diurus oleh SuperAdmin sahaja)
