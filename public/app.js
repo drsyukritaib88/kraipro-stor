@@ -210,8 +210,19 @@ function startFirestoreListeners() {
   firestorePermissionDenied = false;
   setSyncBadge('wait', 'Menyambung Cloud...');
 
+  // Popup "Memuatkan data" sehingga data stok pertama diterima (atau ralat / 15 saat)
+  const loadToken = showLoadingOverlay('Memuatkan data...');
+  let firstLoadDone = false;
+  const finishFirstLoad = () => {
+    if (firstLoadDone) return;
+    firstLoadDone = true;
+    hideLoadingOverlay(loadToken);
+  };
+  setTimeout(finishFirstLoad, 15000);
+
   // Stok induk, pembekal & LPO
   firestoreUnsubscribers.push(stateDocRef().onSnapshot((snap) => {
+    finishFirstLoad();
     if (!snap.exists) {
       // Kali pertama: cipta dokumen daripada data permulaan (data.js)
       if (isAdminLoggedIn) syncStateToFirestore();
@@ -223,7 +234,7 @@ function startFirestoreListeners() {
     if (Array.isArray(data.lpoList)) lpoList = data.lpoList.filter(l => l && typeof l === 'object').map(l => ({ ...l, items: Array.isArray(l.items) ? l.items.map(i => ({ ...i, qty: toInt(i.qty) })) : [] }));
     setSyncBadge('ok', 'Cloud Synced');
     renderAll();
-  }, onFirestoreError('stok')));
+  }, (err) => { finishFirstLoad(); onFirestoreError('stok')(err); }));
 
   // Permohonan: pelulus/SuperAdmin lihat semua, pemohon lihat permohonan sendiri sahaja
   const reqQuery = isAdminLoggedIn
@@ -241,6 +252,7 @@ function startFirestoreListeners() {
     appUsers = qs.docs.map(d => ({ id: d.id, ...d.data() }));
     approverUsers = appUsers.filter(u => u.role === 'pelulus');
     renderApproversTable();
+    if (currentUserRole === 'superadmin') syncAllowlist();
   }, onFirestoreError('pengguna')));
 
   // Log audit (pelulus & SuperAdmin sahaja)
@@ -252,14 +264,38 @@ function startFirestoreListeners() {
   }
 }
 
+// Pastikan senarai e-mel dibenarkan sepadan dengan senarai pengguna (SuperAdmin sahaja)
+let allowlistSyncRunning = false;
+async function syncAllowlist() {
+  if (allowlistSyncRunning || currentUserRole !== 'superadmin') return;
+  allowlistSyncRunning = true;
+  try {
+    const existing = new Set((await db.collection('kraipro_allowlist').get()).docs.map(d => d.id));
+    const wanted = new Set(appUsers.map(u => u.id));
+    const ops = [];
+    wanted.forEach(id => { if (!existing.has(id)) ops.push(b => b.set(db.collection('kraipro_allowlist').doc(id), { aktif: true })); });
+    existing.forEach(id => { if (!wanted.has(id)) ops.push(b => b.delete(db.collection('kraipro_allowlist').doc(id))); });
+    for (let i = 0; i < ops.length; i += 400) {
+      const batch = db.batch();
+      ops.slice(i, i + 400).forEach(op => op(batch));
+      await batch.commit();
+    }
+  } catch (err) {
+    console.warn('Penyelarasan senarai e-mel dibenarkan gagal:', err);
+  } finally {
+    allowlistSyncRunning = false;
+  }
+}
+
+// Pulangkan Promise<boolean>: true jika berjaya disimpan ke Cloud
 function saveState() {
   updateAdminTaskBadges();
-  syncStateToFirestore();
+  return syncStateToFirestore();
 }
 
 // Tulis stok induk, pembekal & LPO (pelulus/SuperAdmin sahaja - dikuatkuasa oleh firestore.rules)
 function syncStateToFirestore() {
-  if (!db || !isAdminLoggedIn) return;
+  if (!db || !isAdminLoggedIn) return Promise.resolve(false);
   const payload = {
     items: items,
     pembekalList: pembekalList,
@@ -267,10 +303,12 @@ function syncStateToFirestore() {
     lastUpdated: new Date().toISOString()
   };
 
-  stateDocRef().set(payload, { merge: true })
+  return stateDocRef().set(payload, { merge: true })
+    .then(() => true)
     .catch(err => {
       console.warn("Firestore sync warning:", err);
       showToast('Gagal menyimpan ke Cloud: ' + (err.message || err), 'error');
+      return false;
     });
 }
 
@@ -476,6 +514,7 @@ function clearAuditTrailLogs() {
     return;
   }
   showConfirmModal('Bersihkan Log Audit', 'Adakah anda pasti mahu memadam semua rekod jejak audit?', async () => {
+    const loadingToken = showLoadingOverlay('Membersihkan log audit...');
     try {
       const qs = await db.collection('kraipro_audit').get();
       for (let i = 0; i < qs.docs.length; i += 400) {
@@ -487,6 +526,8 @@ function clearAuditTrailLogs() {
       showToast('Log jejak audit telah dibersihkan.', 'info');
     } catch (err) {
       showToast('Gagal membersihkan log audit: ' + (err.message || err), 'error');
+    } finally {
+      hideLoadingOverlay(loadingToken);
     }
   });
 }
@@ -773,7 +814,7 @@ function importItemsFromCSV(event) {
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
     const text = e.target.result;
     const lines = text.split(/\r\n|\n/);
     let importedCount = 0;
@@ -809,10 +850,10 @@ function importItemsFromCSV(event) {
       }
     }
 
-    saveState();
+    const ok = await runWithLoading(`Mengimport ${importedCount} item ke Cloud...`, () => saveState());
     renderAll();
     addAuditLog("Import CSV", `Berjaya memuat naik/kemaskini ${importedCount} item daripada CSV.`);
-    showToast(`Berjaya mengimport ${importedCount} item dari fail CSV!`, 'success');
+    if (ok) showToast(`Berjaya mengimport ${importedCount} item dari fail CSV!`, 'success');
     event.target.value = '';
   };
 
@@ -861,11 +902,12 @@ function setAuthMode(mode) {
   if (btnRegister) btnRegister.className = isRegister ? activeCls : idleCls;
 
   document.getElementById('auth-password2-wrap')?.classList.toggle('hidden', !isRegister);
+  document.getElementById('auth-register-note')?.classList.toggle('hidden', !isRegister);
   document.getElementById('auth-forgot-btn')?.classList.toggle('hidden', isRegister);
   const pw = document.getElementById('auth-password');
   if (pw) pw.autocomplete = isRegister ? 'new-password' : 'current-password';
   const submitBtn = document.getElementById('auth-submit-btn');
-  if (submitBtn) submitBtn.innerText = isRegister ? 'Cipta Akaun & Hantar E-mel Pengesahan' : 'Log Masuk';
+  if (submitBtn) submitBtn.innerText = isRegister ? 'Tetapkan Kata Laluan & Hantar E-mel Pengesahan' : 'Log Masuk';
   resetPasswordVisibility();
   showAuthMessage(null);
 }
@@ -877,7 +919,7 @@ function authErrorMessage(err) {
     'auth/invalid-login-credentials': 'E-mel atau kata laluan tidak betul.',
     'auth/wrong-password': 'E-mel atau kata laluan tidak betul.',
     'auth/user-not-found': 'E-mel atau kata laluan tidak betul.',
-    'auth/email-already-in-use': 'E-mel ini sudah mempunyai akaun. Sila log masuk (atau guna "Lupa kata laluan?").',
+    'auth/email-already-in-use': 'Kata laluan untuk e-mel ini telah ditetapkan. Sila log masuk, atau guna "Lupa kata laluan?" jika terlupa.',
     'auth/weak-password': 'Kata laluan terlalu lemah. Gunakan sekurang-kurangnya 8 aksara.',
     'auth/invalid-email': 'Format e-mel tidak sah.',
     'auth/too-many-requests': 'Terlalu banyak cubaan. Sila tunggu beberapa minit dan cuba lagi.',
@@ -929,6 +971,15 @@ function loadSavedLoginEmail() {
   if (rememberEl) rememberEl.checked = !!saved;
 }
 
+async function isEmailRegistered(email) {
+  if (email === SUPERADMIN_EMAIL.toLowerCase()) return true;
+  const snap = await db.collection('kraipro_allowlist').doc(email).get();
+  return snap.exists;
+}
+
+// Mesej untuk dipaparkan selepas akaun tidak sah dipadam (onAuthStateChanged akan dipanggil semula)
+let pendingAuthNotice = '';
+
 async function handleAuthSubmit() {
   const email = document.getElementById('auth-email')?.value.trim().toLowerCase();
   const password = document.getElementById('auth-password')?.value || '';
@@ -949,6 +1000,7 @@ async function handleAuthSubmit() {
 
   const submitBtn = document.getElementById('auth-submit-btn');
   if (submitBtn) submitBtn.disabled = true;
+  const loadingToken = showLoadingOverlay(authMode === 'register' ? 'Menetapkan kata laluan...' : 'Sedang log masuk...');
 
   try {
     if (authMode === 'register') {
@@ -960,6 +1012,11 @@ async function handleAuthSubmit() {
         showAuthMessage('error', 'Pengesahan kata laluan tidak sepadan.');
         return;
       }
+      // Hanya e-mel yang didaftarkan SuperAdmin boleh menetapkan kata laluan
+      if (!(await isEmailRegistered(email))) {
+        showAuthMessage('error', `E-mel ${email} belum didaftarkan oleh SuperAdmin. Sila hubungi SuperAdmin untuk didaftarkan terlebih dahulu.`);
+        return;
+      }
       const cred = await auth.createUserWithEmailAndPassword(email, password);
       await cred.user.sendEmailVerification();
       // onAuthStateChanged akan memaparkan langkah pengesahan e-mel
@@ -969,6 +1026,7 @@ async function handleAuthSubmit() {
   } catch (err) {
     showAuthMessage('error', authErrorMessage(err));
   } finally {
+    hideLoadingOverlay(loadingToken);
     if (submitBtn) submitBtn.disabled = false;
     const pwEl = document.getElementById('auth-password');
     const pw2El = document.getElementById('auth-password2');
@@ -984,17 +1042,21 @@ async function handleForgotPassword() {
     showAuthMessage('error', 'Masukkan e-mel anda dahulu, kemudian tekan "Lupa kata laluan?".');
     return;
   }
+  const loadingToken = showLoadingOverlay('Menghantar pautan set semula kata laluan...');
   try {
     await auth.sendPasswordResetEmail(email);
     showAuthMessage('info', `Jika ${email} mempunyai akaun, pautan set semula kata laluan telah dihantar.`);
   } catch (err) {
     showAuthMessage('error', authErrorMessage(err));
+  } finally {
+    hideLoadingOverlay(loadingToken);
   }
 }
 
 async function checkEmailVerified() {
   const user = auth && auth.currentUser;
   if (!user) return;
+  const loadingToken = showLoadingOverlay('Menyemak pengesahan e-mel...');
   try {
     await user.reload();
     if (!auth.currentUser.emailVerified) {
@@ -1003,20 +1065,26 @@ async function checkEmailVerified() {
     }
     // Dapatkan token baharu (email_verified = true) yang diperlukan oleh firestore.rules
     await auth.currentUser.getIdToken(true);
+    hideLoadingOverlay(loadingToken);
     handleAuthStateChanged(auth.currentUser);
   } catch (err) {
     showAuthMessage('error', authErrorMessage(err));
+  } finally {
+    hideLoadingOverlay(loadingToken);
   }
 }
 
 async function resendVerificationEmail() {
   const user = auth && auth.currentUser;
   if (!user) return;
+  const loadingToken = showLoadingOverlay('Menghantar semula e-mel pengesahan...');
   try {
     await user.sendEmailVerification();
     showAuthMessage('info', 'E-mel pengesahan telah dihantar semula.');
   } catch (err) {
     showAuthMessage('error', authErrorMessage(err));
+  } finally {
+    hideLoadingOverlay(loadingToken);
   }
 }
 
@@ -1047,6 +1115,10 @@ async function handleAuthStateChanged(user) {
     setAuthMode(authMode);
     showAuthStep('login');
     updateAdminStatusUI();
+    if (pendingAuthNotice) {
+      showAuthMessage('error', pendingAuthNotice);
+      pendingAuthNotice = '';
+    }
     return;
   }
 
@@ -1081,9 +1153,14 @@ async function handleAuthStateChanged(user) {
   }
 
   if (!role) {
-    const el = document.getElementById('auth-unlisted-email');
-    if (el) el.innerText = email;
-    showAuthStep('unlisted');
+    // Akaun dicipta tanpa didaftarkan SuperAdmin: padam akaun log masuk ini
+    pendingAuthNotice = `E-mel ${email} belum didaftarkan oleh SuperAdmin. Akaun log masuk ini telah dibatalkan. Sila hubungi SuperAdmin untuk didaftarkan.`;
+    try {
+      await user.delete();
+    } catch (err) {
+      console.warn('Gagal memadam akaun tidak berdaftar:', err);
+      try { await auth.signOut(); } catch (e) {}
+    }
     return;
   }
 
@@ -1108,11 +1185,58 @@ async function handleAuthStateChanged(user) {
   showToast(`Selamat datang, ${(profile && profile.nama) || email}!`, 'success');
 }
 
-function prefillRequesterForm() {
-  const namaEl = document.getElementById('req-nama');
-  if (namaEl && !namaEl.value && currentUserProfile && currentUserProfile.nama) {
-    namaEl.value = currentUserProfile.nama;
+// Pilihan Jawatan / Gred / Unit dikongsi dengan borang permohonan (satu sumber)
+function requestFormOptions(selectId) {
+  const select = document.getElementById(selectId);
+  return select ? [...select.options].map(o => o.value).filter(Boolean) : [];
+}
+
+// Tetapkan nilai <select>; tambah pilihan jika nilai tiada dalam senarai
+function setSelectValue(select, value) {
+  if (!select) return;
+  if (value && ![...select.options].some(o => o.value === value)) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    select.appendChild(opt);
   }
+  select.value = value || '';
+}
+
+const LOCKED_FIELD_CLASSES = ['bg-slate-100', 'text-slate-700', 'cursor-not-allowed'];
+
+// Isi Nama, Jawatan, Gred & Unit daripada maklumat yang didaftarkan SuperAdmin, dan kunci medan tersebut
+function prefillRequesterForm() {
+  const p = currentUserProfile || {};
+  const fields = [
+    ['req-nama', p.nama],
+    ['req-jawatan', p.jawatan],
+    ['req-gred', p.gred],
+    ['req-unit', p.unit]
+  ];
+  let lockedCount = 0;
+
+  fields.forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const v = String(value || '').trim();
+    const lock = !!v;
+    // Medan yang dikunci untuk pengguna sebelumnya: kosongkan apabila tidak lagi dikunci
+    const wasLocked = el.tagName === 'SELECT' ? el.disabled : el.readOnly;
+    if (!lock && wasLocked) el.value = '';
+    if (lock) {
+      if (el.tagName === 'SELECT') setSelectValue(el, v);
+      else el.value = v;
+      lockedCount++;
+    }
+    // Input guna readonly; select guna disabled (nilai masih boleh dibaca oleh kod)
+    if (el.tagName === 'SELECT') el.disabled = lock;
+    else el.readOnly = lock;
+    LOCKED_FIELD_CLASSES.forEach(c => el.classList.toggle(c, lock));
+    el.title = lock ? 'Diambil daripada akaun anda' : '';
+  });
+
+  document.getElementById('req-profile-note')?.classList.toggle('hidden', lockedCount === 0);
 }
 
 function startInactivityTimer() {
@@ -1235,7 +1359,7 @@ function renderApproversTable() {
     return `
       <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
         <td class="p-3 font-bold text-slate-800">${escapeHtml(a.nama)}</td>
-        <td class="p-3 font-semibold text-slate-600">${escapeHtml(a.jawatan)}</td>
+        <td class="p-3 font-semibold text-slate-600">${escapeHtml(a.jawatan)}${a.gred ? ` (${escapeHtml(a.gred)})` : ''}${a.unit ? `<span class="block text-[10px] text-slate-400 font-medium">${escapeHtml(a.unit)}</span>` : ''}</td>
         <td class="p-3 font-bold text-purple-900">${escapeHtml(a.email)}</td>
         <td class="p-3">${roleBadge}</td>
         <td class="p-3">${catsHtml || '<span class="text-slate-400">-</span>'}</td>
@@ -1261,6 +1385,13 @@ function openApproverModal(userId = null) {
   document.querySelectorAll('.approver-cat-checkbox').forEach(cb => cb.checked = false);
   const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
 
+  const gredSel = document.getElementById('modal-approver-gred');
+  const unitSel = document.getElementById('modal-approver-unit');
+  if (gredSel) gredSel.innerHTML = '<option value="">-- Pilih Gred --</option>' + requestFormOptions('req-gred').map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+  if (unitSel) unitSel.innerHTML = '<option value="">-- Pilih Unit / Klinik --</option>' + requestFormOptions('req-unit').map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+  const jawatanList = document.getElementById('modal-approver-jawatan-list');
+  if (jawatanList) jawatanList.innerHTML = requestFormOptions('req-jawatan').map(o => `<option value="${escapeHtml(o)}"></option>`).join('');
+
   if (userId) {
     const u = appUsers.find(a => String(a.id) === String(userId));
     if (!u) return;
@@ -1271,6 +1402,8 @@ function openApproverModal(userId = null) {
     setVal('modal-approver-jawatan', u.jawatan || '');
     setVal('modal-approver-email', u.email || u.id);
     setVal('modal-approver-role', u.role === 'pelulus' ? 'pelulus' : 'pemohon');
+    setSelectValue(gredSel, u.gred || '');
+    setSelectValue(unitSel, u.unit || '');
 
     (u.allowedCategories || []).forEach(c => {
       document.querySelectorAll('.approver-cat-checkbox').forEach(cb => {
@@ -1284,6 +1417,8 @@ function openApproverModal(userId = null) {
     setVal('modal-approver-jawatan', '');
     setVal('modal-approver-email', '');
     setVal('modal-approver-role', 'pemohon');
+    setSelectValue(gredSel, '');
+    setSelectValue(unitSel, '');
   }
 
   onApproverRoleChange();
@@ -1306,6 +1441,8 @@ async function saveApprover() {
   const jawatan = document.getElementById('modal-approver-jawatan')?.value.trim();
   const email = document.getElementById('modal-approver-email')?.value.trim().toLowerCase();
   const role = document.getElementById('modal-approver-role')?.value === 'pelulus' ? 'pelulus' : 'pemohon';
+  const gred = document.getElementById('modal-approver-gred')?.value || '';
+  const unit = document.getElementById('modal-approver-unit')?.value || '';
 
   const selectedCats = [];
   if (role === 'pelulus') {
@@ -1337,15 +1474,22 @@ async function saveApprover() {
     email,
     nama,
     jawatan,
+    gred,
+    unit,
     role,
     allowedCategories: selectedCats,
     dikemaskiniPada: new Date().toISOString()
   };
 
+  const loadingToken = showLoadingOverlay(oldId ? 'Mengemaskini maklumat pengguna...' : 'Mendaftarkan pengguna...');
   try {
     const batch = db.batch();
     batch.set(db.collection('kraipro_users').doc(email), userData);
-    if (oldId && oldId !== email) batch.delete(db.collection('kraipro_users').doc(oldId));
+    batch.set(db.collection('kraipro_allowlist').doc(email), { aktif: true });
+    if (oldId && oldId !== email) {
+      batch.delete(db.collection('kraipro_users').doc(oldId));
+      batch.delete(db.collection('kraipro_allowlist').doc(oldId));
+    }
     await batch.commit();
 
     const roleLabel = role === 'pelulus' ? 'Pegawai Pelulus' : 'Pemohon';
@@ -1354,6 +1498,8 @@ async function saveApprover() {
     showToast('Maklumat pengguna berjaya disimpan!', 'success');
   } catch (err) {
     showToast('Gagal menyimpan pengguna: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay(loadingToken);
   }
 }
 
@@ -1361,12 +1507,18 @@ function deleteApprover(id) {
   if (currentUserRole !== 'superadmin') return;
   const target = appUsers.find(a => String(a.id) === String(id));
   showConfirmModal('Padam Pengguna', 'Adakah anda pasti mahu memadam pengguna ini? Mereka tidak lagi boleh log masuk.', async () => {
+    const loadingToken = showLoadingOverlay('Memadam pengguna...');
     try {
-      await db.collection('kraipro_users').doc(String(id)).delete();
+      const batch = db.batch();
+      batch.delete(db.collection('kraipro_users').doc(String(id)));
+      batch.delete(db.collection('kraipro_allowlist').doc(String(id)));
+      await batch.commit();
       if (target) addAuditLog("Padam Pengguna", `Memadam akaun ${target.nama} (${target.email || target.id}).`);
       showToast('Akaun pengguna dipadam.', 'info');
     } catch (err) {
       showToast('Gagal memadam pengguna: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(loadingToken);
     }
   });
 }
@@ -2630,7 +2782,7 @@ function closePembekalModal() {
   if (modal) modal.classList.add('hidden');
 }
 
-function savePembekal() {
+async function savePembekal() {
   if (!isAdminLoggedIn) return;
 
   const id = document.getElementById('modal-pembekal-id')?.value;
@@ -2655,23 +2807,23 @@ function savePembekal() {
     addAuditLog("Tambah Pembekal", `Pembekal baru ${nama} ditambah.`);
   }
 
-  saveState();
+  const ok = await runWithLoading('Menyimpan maklumat pembekal...', () => saveState());
   closePembekalModal();
   renderMasterPembekalTable();
   populatePembekalDropdowns();
-  showToast('Maklumat pembekal berjaya disimpan!', 'success');
+  if (ok) showToast('Maklumat pembekal berjaya disimpan!', 'success');
 }
 
 function deletePembekal(id) {
   if (!isAdminLoggedIn) return;
-  showConfirmModal('Padam Pembekal', 'Adakah anda pasti mahu memadam pembekal ini?', () => {
+  showConfirmModal('Padam Pembekal', 'Adakah anda pasti mahu memadam pembekal ini?', async () => {
     const deleted = pembekalList.find(p => String(p.id) === String(id));
     pembekalList = pembekalList.filter(p => String(p.id) !== String(id));
     if (deleted) addAuditLog("Padam Pembekal", `Pembekal ${deleted.nama} dipadam.`);
-    saveState();
+    const ok = await runWithLoading('Memadam pembekal...', () => saveState());
     renderMasterPembekalTable();
     populatePembekalDropdowns();
-    showToast('Pembekal dipadam', 'info');
+    if (ok) showToast('Pembekal dipadam', 'info');
   });
 }
 
@@ -3138,7 +3290,7 @@ function onModalCategoryChange() {
   populateModalSubCategories(mainCat, '');
 }
 
-function saveItem() {
+async function saveItem() {
   const id = document.getElementById('modal-item-id')?.value;
   const sku = document.getElementById('modal-item-sku')?.value.trim();
   const nama = document.getElementById('modal-item-nama')?.value.trim();
@@ -3168,20 +3320,20 @@ function saveItem() {
     addAuditLog("Tambah Item Baru", `Item baru [${sku}] ${nama} ditambah.`);
   }
 
-  saveState();
+  const ok = await runWithLoading('Menyimpan item...', () => saveState());
   closeItemModal();
   renderAll();
-  showToast('Item berjaya disimpan!', 'success');
+  if (ok) showToast('Item berjaya disimpan!', 'success');
 }
 
 function deleteItem(id) {
-  showConfirmModal('Padam Item', 'Adakah anda pasti mahu memadam item ini?', () => {
+  showConfirmModal('Padam Item', 'Adakah anda pasti mahu memadam item ini?', async () => {
     const deletedItem = items.find(i => String(i.id) === String(id));
     items = items.filter(i => String(i.id) !== String(id));
     if (deletedItem) addAuditLog("Padam Item", `Item [${deletedItem.sku}] ${deletedItem.nama} dipadam.`);
-    saveState();
+    const ok = await runWithLoading('Memadam item...', () => saveState());
     renderAll();
-    showToast('Item telah dipadam.', 'info');
+    if (ok) showToast('Item telah dipadam.', 'info');
   });
 }
 
@@ -3309,15 +3461,42 @@ function renderDraftTable() {
 }
 
 // Popup loading - menghalang pengguna menekan butang berulang kali semasa proses berjalan
+let loadingOverlayToken = 0;
+
+// Papar popup loading; pulangkan token supaya hanya pemanggil yang sama boleh menutupnya
 function showLoadingOverlay(msg) {
   const overlay = document.getElementById('loading-overlay');
   const text = document.getElementById('loading-overlay-text');
   if (text) text.textContent = msg || 'Sila tunggu...';
   if (overlay) overlay.classList.remove('hidden');
+  return ++loadingOverlayToken;
 }
 
-function hideLoadingOverlay() {
+// Tanpa token: tutup terus. Dengan token: tutup hanya jika tiada popup lebih baharu dibuka
+function hideLoadingOverlay(token) {
+  if (token !== undefined && token !== loadingOverlayToken) return;
   document.getElementById('loading-overlay')?.classList.add('hidden');
+}
+
+const SLOW_OPERATION_MS = 20000;
+
+// Jalankan tugas dengan popup loading. Jika sambungan terlalu perlahan, popup ditutup selepas 20 saat
+// (Firestore akan terus menyimpan di latar belakang apabila sambungan pulih).
+async function runWithLoading(message, task) {
+  const token = showLoadingOverlay(message);
+  let timer;
+  const slow = new Promise(resolve => { timer = setTimeout(() => resolve('__perlahan__'), SLOW_OPERATION_MS); });
+  try {
+    const result = await Promise.race([Promise.resolve().then(task), slow]);
+    if (result === '__perlahan__') {
+      showToast('Sambungan perlahan. Perubahan akan disimpan ke Cloud apabila sambungan pulih.', 'info');
+      return true;
+    }
+    return result;
+  } finally {
+    clearTimeout(timer);
+    hideLoadingOverlay(token);
+  }
 }
 
 let isSubmittingRequest = false;
@@ -3437,7 +3616,8 @@ async function submitRequest() {
   }
 
   draftReqItems = [];
-  if (document.getElementById('req-nama')) document.getElementById('req-nama').value = '';
+  const namaInput = document.getElementById('req-nama');
+  if (namaInput && !namaInput.readOnly) namaInput.value = '';
   prefillRequesterForm();
   renderAll();
 }
@@ -3751,7 +3931,7 @@ function renderLpoDraftTable() {
   `).join('');
 }
 
-function submitLpoOrder() {
+async function submitLpoOrder() {
   const lpoNo = document.getElementById('lpo-no')?.value.trim();
   const pembekal = document.getElementById('lpo-pembekal')?.value;
   const tarikh = document.getElementById('lpo-tarikh')?.value;
@@ -3776,14 +3956,14 @@ function submitLpoOrder() {
 
   lpoList.unshift(newLpo);
   addAuditLog("Pesanan LPO Baru", `Pesanan LPO ${lpoNo} dihantar kepada ${pembekal}.`);
-  saveState();
+  const ok = await runWithLoading(`Merekod pesanan LPO ${lpoNo}...`, () => saveState());
 
   draftLpoItems = [];
   if (document.getElementById('lpo-no')) document.getElementById('lpo-no').value = '';
   renderLpoDraftTable();
   renderMasterLpoTable();
   renderAll();
-  showToast(`Pesanan LPO ${lpoNo} berjaya direkodkan!`, 'success');
+  if (ok) showToast(`Pesanan LPO ${lpoNo} berjaya direkodkan!`, 'success');
 }
 
 // ---- KEW.PS-1: Borang Terimaan Barang-Barang (BTB) ----

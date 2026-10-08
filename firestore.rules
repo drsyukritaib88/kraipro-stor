@@ -54,6 +54,18 @@ service cloud.firestore {
       allow delete: if isSuper();
     }
 
+    // Senarai e-mel dibenarkan (tanpa maklumat peribadi). Boleh disemak SEBELUM log masuk,
+    // supaya hanya e-mel yang didaftarkan SuperAdmin boleh menetapkan kata laluan.
+    match /kraipro_allowlist/{email} {
+      allow get: if true;
+      allow list: if isSuper();
+      allow create, update: if isSuper()
+        && email == email.lower()
+        && request.resource.data.keys().hasOnly(['aktif'])
+        && request.resource.data.aktif == true;
+      allow delete: if isSuper();
+    }
+
     // Permohonan stok (satu dokumen setiap permohonan)
     match /kraipro_requests/{reqId} {
       allow read: if isApprover()
