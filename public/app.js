@@ -3631,8 +3631,11 @@ function renderSejarahPermohonan() {
   pendingContainer.innerHTML = '';
   completedContainer.innerHTML = '';
 
-  const pendingList = requests.filter(r => r.status === 'Pending');
-  const completedList = requests.filter(r => r.status !== 'Pending');
+  // Sejarah peribadi: hanya permohonan yang dibuat menggunakan akaun ini
+  // (Pelulus/SuperAdmin menyemak semua permohonan di tab Pentadbir → Kelulusan Permohonan)
+  const myRequests = requests.filter(r => r.ownerEmail && r.ownerEmail === currentUserEmail);
+  const pendingList = myRequests.filter(r => r.status === 'Pending');
+  const completedList = myRequests.filter(r => r.status !== 'Pending');
 
   if (pendingList.length === 0) {
     pendingContainer.innerHTML = `<div class="p-4 bg-slate-50 text-slate-400 text-xs text-center rounded-xl">Tiada permohonan belum selesai.</div>`;
