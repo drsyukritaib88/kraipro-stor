@@ -2892,6 +2892,8 @@ function rejectRequest(reqId) {
         tx.update(requestRef(req.id), {
           items: (r.items || []).map(i => ({ ...i, qtyLulus: 0, status: 'Ditolak' })),
           status: 'Ditolak',
+          pelulusNama: currentApproverData ? currentApproverData.nama : 'SuperAdmin Utama',
+          pelulusJawatan: currentApproverData ? currentApproverData.jawatan : 'Pentadbir Sistem',
           pelulusEmail: currentUserEmail,
           tarikhLulus: todayISODate()
         });
@@ -4162,25 +4164,29 @@ function previewKewPs8(reqId) {
 
   const processed = req.status !== 'Pending';
   const pemohonJawatan = [req.jawatan, req.gred].filter(Boolean).join(' ');
-  const pelulusNama = processed ? (req.pelulusNama || '') : '';
-  const pelulusJawatan = processed ? (req.pelulusJawatan || '') : '';
+  // Rekod lama mungkin hanya ada e-mel pelulus: cari nama/jawatan dalam senarai pengguna
+  const pelulusUser = req.pelulusEmail ? appUsers.find(u => u.id === String(req.pelulusEmail).toLowerCase()) : null;
+  const pelulusIsSuper = req.pelulusEmail && String(req.pelulusEmail).toLowerCase() === SUPERADMIN_EMAIL.toLowerCase();
+  const pelulusNama = processed ? (req.pelulusNama || (pelulusUser && pelulusUser.nama) || (pelulusIsSuper ? 'SuperAdmin Utama' : '')) : '';
+  const pelulusJawatan = processed ? (req.pelulusJawatan || (pelulusUser && pelulusUser.jawatan) || (pelulusIsSuper ? 'Pentadbir Sistem' : '')) : '';
   const pelulusTarikh = processed ? fmtDate(req.tarikhLulus || '') : '';
 
   // Gaya: garis biasa & garis tebal pemisah bahagian; fon pengisian kecil
   const b = 'border border-black';
   const thick = 'border-r-[3px] border-r-black';
-  const th = `${b} bg-[#d9d9d9] font-bold text-center align-middle px-1 py-1.5 text-[10px] leading-tight`;
-  const td = `${b} px-1 py-1 text-[8.5px] leading-tight align-middle`;
+  const th = `${b} bg-[#d9d9d9] font-bold text-center align-middle px-1.5 py-2 text-[10.5pt] leading-tight`;
+  const td = `${b} px-1.5 py-1 text-[10pt] leading-snug align-middle`;
+  const rowStyle = 'height:16mm';
 
   const signBlock = (title, nama, jawatan, tarikh) => `
-    <p class="font-bold text-[11px]">${title}</p>
-    <div class="h-12"></div>
-    <p class="text-[11px]">…………………………………</p>
-    <p class="text-[11px]">(Tandatangan)</p>
-    <table class="mt-1 text-[11px]">
-      <tr><td class="font-bold pr-6 py-0.5">Nama</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(nama)}</td></tr>
-      <tr><td class="font-bold pr-6 py-0.5">Jawatan</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(jawatan)}</td></tr>
-      <tr><td class="font-bold pr-6 py-0.5">Tarikh</td><td class="pr-1">:</td><td class="text-[8.5px]">${escapeHtml(tarikh)}</td></tr>
+    <p class="font-bold text-[11.5pt]">${title}</p>
+    <div style="height:15mm"></div>
+    <p class="text-[11pt]">……………………………………………</p>
+    <p class="text-[11pt]">(Tandatangan)</p>
+    <table class="mt-2 text-[11pt] w-full">
+      <tr><td class="font-bold py-1 align-top" style="width:20mm">Nama</td><td class="pr-1.5 align-top">:</td><td class="text-[10pt] align-top">${escapeHtml(nama)}</td></tr>
+      <tr><td class="font-bold py-1 align-top">Jawatan</td><td class="pr-1.5 align-top">:</td><td class="text-[10pt] align-top">${escapeHtml(jawatan)}</td></tr>
+      <tr><td class="font-bold py-1 align-top">Tarikh</td><td class="pr-1.5 align-top">:</td><td class="text-[10pt] align-top">${escapeHtml(tarikh)}</td></tr>
     </table>`;
 
   const forms = chunks.map((chunk, formIdx) => {
@@ -4188,7 +4194,7 @@ function previewKewPs8(reqId) {
     for (let r = 0; r < KEWPS8_ROWS_PER_FORM; r++) {
       const i = chunk[r];
       if (!i) {
-        rows.push(`<tr class="h-8">${`<td class="${td}"></td>`.repeat(3)}<td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td><td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td></tr>`);
+        rows.push(`<tr style="${rowStyle}">${`<td class="${td}"></td>`.repeat(3)}<td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td><td class="${td} ${thick}"></td><td class="${td}"></td><td class="${td}"></td></tr>`);
         continue;
       }
       const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
@@ -4202,9 +4208,9 @@ function previewKewPs8(reqId) {
         i.status === 'Dibatalkan' ? 'Dibatalkan' :
         toInt(i.qtyLulus) < toInt(i.qtyMohon) ? 'Lulus sebahagian' : '';
       rows.push(`
-        <tr class="h-8">
-          <td class="${td} text-center">${escapeHtml(i.sku)}</td>
-          <td class="${td}">${escapeHtml(i.nama)}</td>
+        <tr style="${rowStyle}">
+          <td class="${td} text-center text-[9pt] [overflow-wrap:anywhere]">${escapeHtml(i.sku)}</td>
+          <td class="${td} [overflow-wrap:anywhere]">${escapeHtml(i.nama)}</td>
           <td class="${td} text-center">${toInt(i.qtyMohon)}</td>
           <td class="${td} ${thick}"></td>
           <td class="${td} text-center">${processed ? baki : ''}</td>
@@ -4215,27 +4221,27 @@ function previewKewPs8(reqId) {
         </tr>`);
     }
 
-    const formLabel = chunks.length > 1 ? ` <span class="text-[10px] font-normal">(Borang ${formIdx + 1}/${chunks.length})</span>` : '';
+    const formLabel = chunks.length > 1 ? ` <span class="text-[10pt] font-normal">(Borang ${formIdx + 1}/${chunks.length})</span>` : '';
     return `
       <div class="kewps8-form text-black font-sans" style="${formIdx < chunks.length - 1 ? 'page-break-after: always; break-after: page;' : ''}">
-        <div class="flex justify-between text-[11px]">
+        <div class="flex justify-between text-[11pt]">
           <p>Pekeliling Perbendaharaan Malaysia</p>
           <p>AM 6.5 Lampiran B</p>
         </div>
-        <div class="text-right mt-4">
-          <p class="font-bold text-sm">KEW.PS-8</p>
-          <p class="text-[12px]">No. BPSI : <span class="font-semibold">${escapeHtml(req.id)}</span>${formLabel}</p>
+        <div class="text-right mt-5">
+          <p class="font-bold text-[14pt]">KEW.PS-8</p>
+          <p class="text-[12pt]">No. BPSI : <span class="font-semibold">${escapeHtml(req.id)}</span>${formLabel}</p>
         </div>
-        <div class="text-center font-bold text-[13px] leading-snug mt-2 mb-3">
+        <div class="text-center font-bold text-[14pt] leading-snug mt-3 mb-4">
           <p>BORANG PERMOHONAN STOK</p>
           <p>(INDIVIDU KEPADA STOR)</p>
         </div>
 
         <table class="w-full border-collapse table-fixed border-2 border-black">
           <colgroup>
-            <col style="width:4.4%"><col style="width:13.8%"><col style="width:7.6%"><col style="width:8.7%">
-            <col style="width:10%"><col style="width:10.2%"><col style="width:11.7%">
-            <col style="width:13.8%"><col style="width:19.8%">
+            <col style="width:9%"><col style="width:15%"><col style="width:7.5%"><col style="width:7.5%">
+            <col style="width:9.5%"><col style="width:9.5%"><col style="width:11%">
+            <col style="width:12.5%"><col style="width:18.5%">
           </colgroup>
           <tr>
             <th colspan="4" class="${th} ${thick}">Permohonan</th>
@@ -4255,16 +4261,17 @@ function previewKewPs8(reqId) {
           </tr>
           ${rows.join('')}
           <tr class="align-top">
-            <td colspan="4" class="${b} ${thick} p-2">${signBlock('Pemohon:', req.nama || '', pemohonJawatan, fmtDate(req.tarikh))}</td>
-            <td colspan="3" class="${b} ${thick} p-2">${signBlock('Pegawai Pelulus:', pelulusNama, pelulusJawatan, pelulusTarikh)}</td>
-            <td colspan="2" class="${b} p-2">${signBlock('Pemohon/ Wakil:', '', '', '')}</td>
+            <td colspan="4" class="${b} ${thick} px-3 py-2.5">${signBlock('Pemohon:', req.nama || '', pemohonJawatan, fmtDate(req.tarikh))}</td>
+            <td colspan="3" class="${b} ${thick} px-3 py-2.5">${signBlock('Pegawai Pelulus:', pelulusNama, pelulusJawatan, pelulusTarikh)}</td>
+            <td colspan="2" class="${b} px-3 py-2.5">${signBlock('Pemohon/ Wakil:', '', '', '')}</td>
           </tr>
         </table>
-        <div class="border-t border-slate-500 mt-8"></div>
+        <div class="border-t border-slate-500 mt-5"></div>
       </div>`;
   });
 
-  content.innerHTML = `<div class="max-w-[280mm] mx-auto space-y-10">${forms.join('')}</div>`;
+  // Jarak antara borang hanya di skrin; semasa cetak setiap borang bermula di halaman baharu tanpa margin tambahan
+  content.innerHTML = `<div class="max-w-[280mm] mx-auto space-y-10 print:space-y-0">${forms.join('')}</div>`;
 
   const modal = document.getElementById('kewps8-modal');
   if (modal) modal.classList.remove('hidden');
