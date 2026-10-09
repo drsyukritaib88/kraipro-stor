@@ -24,8 +24,10 @@
 
   <style>
     body {
-      font-family: 'Inter', sans-serif;
-      background-color: #f8fafc;
+      font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+      background-color: #f7f5fc;
+      background-image: radial-gradient(1200px 500px at 0% 0%, #efe9fb 0%, transparent 60%), radial-gradient(900px 500px at 100% 20%, #f3effb 0%, transparent 55%);
+      background-attachment: fixed;
     }
     ::-webkit-scrollbar {
       width: 6px;
@@ -272,66 +274,63 @@
   </div>
 
   <!-- HEADER SISTEM -->
-  <header class="bg-gradient-to-r from-purple-950 via-slate-900 to-purple-950 text-white shadow-xl border-b-4 border-amber-500 no-print">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-      <div class="flex flex-col md:flex-row items-center justify-between gap-4">
-        
-        <div class="flex items-center gap-3 sm:gap-5 w-full md:w-auto">
-          <div class="flex-shrink-0 bg-slate-900/80 p-1.5 rounded-2xl border-2 border-purple-400/40 shadow-lg">
-            <i class="fa-solid fa-boxes-packing text-3xl sm:text-4xl text-amber-400 p-2"></i>
-          </div>
-
-          <div class="flex flex-col justify-center gap-1 flex-grow">
-            <div class="flex items-center justify-between gap-2 flex-wrap">
-              <div>
-                <h1 class="text-xl sm:text-3xl font-extrabold tracking-tight text-white flex items-center gap-2">
-                  <span>KraiPRO</span>
-                  <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-black uppercase tracking-wider">STOR</span>
-                </h1>
-                <p class="text-[11px] sm:text-xs font-medium text-purple-200/90">Sistem Pengurusan Inventori Bahan, Alat Tulis & Bekalan Am</p>
-              </div>
-
-              <div class="flex items-center gap-2">
-                <!-- Status Sync Badge -->
-                <div id="firestore-sync-badge" class="flex items-center gap-1.5 bg-slate-900/90 border border-slate-700 px-2.5 py-1 rounded-xl text-[10px] sm:text-[11px] font-semibold text-slate-300 shadow">
-                  <span id="firestore-sync-dot" class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
-                  <span id="firestore-sync-text">Menyambung Cloud...</span>
-                </div>
-
-                <!-- Admin Status Indicator -->
-                <div id="header-admin-status" style="display: none;" class="items-center gap-1.5 bg-slate-900/90 border border-emerald-500/50 px-2.5 py-1 rounded-xl text-[11px] font-semibold text-emerald-300 shadow-md">
-                  <span class="relative flex h-2 w-2">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
-                  <span id="header-user-role" class="hidden sm:inline font-bold">Pentadbir</span>
-                  <button type="button" onclick="handleAdminLogout()" class="ml-1 bg-rose-600/80 hover:bg-rose-600 text-white px-2 py-0.5 rounded-lg text-[10px] transition">
-                    Keluar
-                  </button>
-                </div>
-              </div>
+  <header class="bg-white/90 backdrop-blur border-b border-slate-200/70 shadow-[0_6px_24px_-14px_rgba(76,29,149,0.25)] md:sticky md:top-0 z-40 no-print">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-3">
+      <div class="flex items-center justify-between gap-3">
+        <!-- Logo & nama sistem -->
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="relative shrink-0">
+            <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-purple-600 to-purple-800 flex items-center justify-center shadow-lg shadow-purple-600/30">
+              <i class="fa-solid fa-boxes-packing text-xl text-amber-300"></i>
             </div>
-
-            <!-- Navigation Tabs Utama -->
-            <nav class="grid grid-cols-3 gap-2 sm:flex sm:gap-3 mt-3">
-              <button type="button" id="main-tab-dashboard" onclick="switchTab('dashboard')" class="main-tab-btn">
-                <i class="fa-solid fa-chart-pie"></i>
-                <span class="truncate">Dashboard</span>
-              </button>
-              <button type="button" id="main-tab-pemohon" onclick="switchTab('pemohon')" class="main-tab-btn">
-                <i class="fa-solid fa-paper-plane"></i>
-                <span class="truncate">Permohonan</span>
-              </button>
-              <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn">
-                <i class="fa-solid fa-user-shield"></i>
-                <span class="truncate">Pentadbir</span>
-                <span id="main-tab-admin-badge" class="hidden bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full animate-pulse shadow ml-0.5">0</span>
-              </button>
-            </nav>
+            <span class="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-amber-400 border-2 border-white"></span>
+          </div>
+          <div class="min-w-0">
+            <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900 leading-none flex items-center gap-2">
+              <span>Krai<span class="text-purple-700">PRO</span></span>
+              <span class="bg-amber-400 text-slate-950 text-[10px] px-2 py-0.5 rounded-full font-extrabold tracking-wide">STOR</span>
+            </h1>
+            <p class="text-[11px] sm:text-xs text-slate-500 mt-1 truncate">Pejabat Kesihatan Pergigian Daerah Kuala Krai</p>
           </div>
         </div>
 
+        <!-- Status & pengguna -->
+        <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div id="firestore-sync-badge" class="hidden md:flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-600">
+            <span id="firestore-sync-dot" class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="firestore-sync-text">Menyambung Cloud...</span>
+          </div>
+          <div id="header-admin-status" style="display: none;" class="items-center gap-2 sm:gap-3">
+            <div class="flex items-center gap-2.5 bg-slate-50/80 border border-slate-200 rounded-full p-1 sm:pr-4">
+              <span id="header-user-initial" class="w-9 h-9 rounded-full bg-purple-100 text-purple-700 font-extrabold flex items-center justify-center text-sm">?</span>
+              <div class="hidden sm:block leading-tight max-w-[18rem]">
+                <p id="header-user-name" class="text-[13px] font-extrabold text-slate-900 truncate"></p>
+                <p id="header-user-role" class="text-[11px] font-semibold text-purple-700">Pentadbir</p>
+              </div>
+            </div>
+            <button type="button" onclick="handleAdminLogout()" title="Log keluar" aria-label="Log keluar" class="w-10 h-10 rounded-full bg-white border border-slate-200 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-600 text-slate-600 flex items-center justify-center shadow-sm transition">
+              <i class="fa-solid fa-right-from-bracket"></i>
+            </button>
+          </div>
+        </div>
       </div>
+
+      <!-- Navigasi Tab Utama -->
+      <nav class="mt-3 flex gap-1.5 sm:gap-2 overflow-x-auto -mx-1 px-1 pb-1">
+        <button type="button" id="main-tab-dashboard" onclick="switchTab('dashboard')" class="main-tab-btn">
+          <i class="fa-solid fa-chart-pie"></i>
+          <span>Dashboard</span>
+        </button>
+        <button type="button" id="main-tab-pemohon" onclick="switchTab('pemohon')" class="main-tab-btn">
+          <i class="fa-solid fa-paper-plane"></i>
+          <span>Permohonan</span>
+        </button>
+        <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn">
+          <i class="fa-solid fa-user-shield"></i>
+          <span>Pentadbir</span>
+          <span id="main-tab-admin-badge" class="hidden bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow ml-0.5">0</span>
+        </button>
+      </nav>
     </div>
   </header>
 
@@ -341,44 +340,40 @@
     <!-- SEKSYEN 1: DASHBOARD -->
     <section id="content-dashboard" class="space-y-6">
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
-          <div class="p-3.5 bg-blue-50 text-blue-600 rounded-xl">
-            <i class="fa-solid fa-boxes-stacked text-2xl"></i>
+        <div class="bg-white p-5 rounded-3xl shadow-[0_8px_30px_-18px_rgba(76,29,149,0.35)] border border-slate-100">
+          <div class="flex items-start justify-between gap-3">
+            <p class="text-[11px] font-extrabold uppercase text-slate-400 tracking-wider">Jumlah Item Stok</p>
+            <span class="w-11 h-11 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0"><i class="fa-solid fa-layer-group"></i></span>
           </div>
-          <div>
-            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Jumlah Item Stok</p>
-            <h3 id="stat-total-items" class="text-2xl font-black text-slate-800">0</h3>
-          </div>
+          <h3 id="stat-total-items" class="mt-1 text-3xl font-extrabold text-slate-900">0</h3>
+          <p class="text-xs text-slate-500 mt-1">Item dalam katalog</p>
         </div>
 
-        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
-          <div class="p-3.5 bg-amber-50 text-amber-600 rounded-xl">
-            <i class="fa-solid fa-triangle-exclamation text-2xl"></i>
+        <div class="bg-white p-5 rounded-3xl shadow-[0_8px_30px_-18px_rgba(76,29,149,0.35)] border border-slate-100">
+          <div class="flex items-start justify-between gap-3">
+            <p class="text-[11px] font-extrabold uppercase text-slate-400 tracking-wider">Stok Paras Reorder</p>
+            <span class="w-11 h-11 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-triangle-exclamation"></i></span>
           </div>
-          <div>
-            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Stok Paras Reorder</p>
-            <h3 id="stat-low-stock" class="text-2xl font-black text-amber-600">0</h3>
-          </div>
+          <h3 id="stat-low-stock" class="mt-1 text-3xl font-extrabold text-slate-900">0</h3>
+          <p class="text-xs text-slate-500 mt-1">Perlu dipesan semula</p>
         </div>
 
-        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
-          <div class="p-3.5 bg-purple-50 text-purple-600 rounded-xl">
-            <i class="fa-solid fa-clipboard-check text-2xl"></i>
+        <div class="bg-white p-5 rounded-3xl shadow-[0_8px_30px_-18px_rgba(76,29,149,0.35)] border border-slate-100">
+          <div class="flex items-start justify-between gap-3">
+            <p class="text-[11px] font-extrabold uppercase text-slate-400 tracking-wider">Permohonan Bulan Ini</p>
+            <span class="w-11 h-11 rounded-full bg-sky-100 text-sky-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-clipboard-check"></i></span>
           </div>
-          <div>
-            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Permohonan Bulan Ini</p>
-            <h3 id="stat-month-requests" class="text-2xl font-black text-slate-800">0</h3>
-          </div>
+          <h3 id="stat-month-requests" class="mt-1 text-3xl font-extrabold text-slate-900">0</h3>
+          <p class="text-xs text-slate-500 mt-1">Permohonan bulan semasa</p>
         </div>
 
-        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 flex items-center gap-4">
-          <div class="p-3.5 bg-emerald-50 text-emerald-600 rounded-xl">
-            <i class="fa-solid fa-coins text-2xl"></i>
+        <div class="bg-white p-5 rounded-3xl shadow-[0_8px_30px_-18px_rgba(76,29,149,0.35)] border border-slate-100">
+          <div class="flex items-start justify-between gap-3">
+            <p class="text-[11px] font-extrabold uppercase text-slate-400 tracking-wider">Nilai Pengeluaran</p>
+            <span class="w-11 h-11 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-coins"></i></span>
           </div>
-          <div>
-            <p class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Nilai Pengeluaran (RM)</p>
-            <h3 id="stat-total-value" class="text-2xl font-black text-emerald-600">RM 0.00</h3>
-          </div>
+          <h3 id="stat-total-value" class="mt-1 text-3xl font-extrabold text-slate-900">RM 0.00</h3>
+          <p class="text-xs text-slate-500 mt-1">Jumlah nilai stok diluluskan</p>
         </div>
       </div>
 
@@ -498,7 +493,7 @@
 
       <!-- Penapis kategori dashboard -->
       <div class="bg-white p-3 rounded-2xl shadow-sm border border-slate-200/80 flex flex-col sm:flex-row sm:items-center gap-2">
-        <span class="text-xs font-extrabold text-slate-600 whitespace-nowrap"><i class="fa-solid fa-filter text-purple-600 mr-1"></i> Tapis Kategori:</span>
+        <span class="text-xs font-extrabold text-slate-600 whitespace-nowrap"><i class="fa-solid fa-filter text-purple-600 mr-1"></i> Tapis Senarai Baki Stok:</span>
         <div id="dashboard-cat-tabs" class="flex flex-wrap gap-1.5"></div>
       </div>
 

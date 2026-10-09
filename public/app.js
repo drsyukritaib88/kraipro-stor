@@ -1649,15 +1649,23 @@ function updateAdminStatusUI() {
     document.getElementById('content-dashboard')?.classList.remove('hidden');
   }
 
+  const nama = (currentUserProfile && currentUserProfile.nama) || '';
+  const displayName = nama || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail);
+  const nameEl = document.getElementById('header-user-name');
+  const initialEl = document.getElementById('header-user-initial');
+  if (nameEl) {
+    nameEl.innerText = displayName || '';
+    nameEl.title = currentUserEmail || '';
+  }
+  if (initialEl) {
+    // Huruf awal nama (abaikan gelaran seperti Dr., Pn., En.)
+    const words = String(displayName || '?').replace(/^(dr|pn|en|cik|tn|puan|encik|prof)\.?\s+/i, '').trim();
+    initialEl.innerText = (words.charAt(0) || '?').toUpperCase();
+  }
   if (roleTextEl) {
-    const nama = currentUserProfile && currentUserProfile.nama;
-    if (currentUserRole === 'superadmin') {
-      roleTextEl.innerText = "SuperAdmin";
-    } else if (currentUserRole === 'pelulus') {
-      roleTextEl.innerText = nama ? `Pelulus (${nama})` : "Pegawai Pelulus";
-    } else {
-      roleTextEl.innerText = nama ? `Pemohon (${nama})` : (currentUserEmail || 'Pemohon');
-    }
+    roleTextEl.innerText = currentUserRole === 'superadmin' ? 'SuperAdmin'
+      : currentUserRole === 'pelulus' ? 'Pegawai Pelulus'
+      : 'Pemohon';
   }
 
   applyRolePermissions();
@@ -2444,18 +2452,18 @@ function showConfirmModal(title, msg, onOk) {
 // ---- Gaya tab (dikongsi) ----
 const TAB_STYLES = {
   main: {
-    base: 'main-tab-btn tab-pill relative flex items-center justify-center gap-2 px-3 sm:px-6 py-2.5 sm:py-3 rounded-2xl text-xs sm:text-sm font-extrabold transition-all duration-200 border',
-    active: 'is-active bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 border-amber-300 shadow-lg shadow-amber-500/30',
-    inactive: 'bg-white/10 text-purple-100 border-white/15 hover:bg-white/20 hover:text-white'
+    base: 'main-tab-btn tab-pill relative shrink-0 flex items-center justify-center gap-2 px-4 sm:px-5 py-2.5 rounded-2xl text-sm font-bold transition-all duration-200 whitespace-nowrap',
+    active: 'is-active bg-purple-600 text-white shadow-lg shadow-purple-600/30',
+    inactive: 'text-slate-600 hover:text-purple-700 hover:bg-purple-50'
   },
   admin: {
     base: 'admin-subtab-btn tab-pill flex items-center justify-center sm:justify-start gap-2 px-4 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-extrabold transition-all duration-200 border',
-    active: 'is-active bg-slate-900 text-white border-slate-900 shadow-lg shadow-slate-900/25',
+    active: 'is-active bg-purple-600 text-white border-purple-600 shadow-lg shadow-purple-600/25',
     inactive: 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50 hover:-translate-y-0.5'
   },
   pill: {
     base: 'tab-pill px-3.5 py-2 rounded-2xl text-xs font-extrabold transition-all duration-200 border',
-    active: 'is-active bg-slate-900 text-white border-slate-900 shadow-md shadow-slate-900/20',
+    active: 'is-active bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-600/25',
     inactive: 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50'
   }
 };
@@ -2505,13 +2513,13 @@ function goToBakiPage(p) {
 // Penapis kategori dashboard ('' = semua)
 let dashboardCatFilter = '';
 
+// Penapis kategori dashboard hanya menapis jadual Senarai Baki Stok (tempat bar penapis diletakkan);
+// kad statistik & graf di atas sentiasa memaparkan semua kategori.
 function setDashboardCatFilter(cat) {
   dashboardCatFilter = cat;
   bakiPage = 1;
   renderDashboardCategoryTabs();
-  updateDashboardStats();
   renderBakiTable();
-  renderPieChartAndTopTable();
 }
 
 function renderDashboardCategoryTabs() {
@@ -2519,13 +2527,6 @@ function renderDashboardCategoryTabs() {
   if (!container) return;
   if (dashboardCatFilter && !items.some(i => itemCategoryName(i) === dashboardCatFilter)) dashboardCatFilter = '';
   container.innerHTML = buildCategoryTabsHtml(items, dashboardCatFilter, 'setDashboardCatFilter');
-}
-
-// Adakah item permohonan berada dalam kategori penapis dashboard?
-function requestItemInDashboardCat(reqItem) {
-  if (!dashboardCatFilter) return true;
-  const inv = items.find(it => String(it.id) === String(reqItem.itemId) || it.sku === reqItem.sku);
-  return (inv ? itemCategoryName(inv) : (reqItem.kategori || '')) === dashboardCatFilter;
 }
 
 function renderBakiTable() {
@@ -4997,7 +4998,7 @@ function calculateIssuanceReport() {
 
 function updateDashboardStats() {
   renderDashboardCategoryTabs();
-  const catItems = dashboardCatFilter ? items.filter(i => itemCategoryName(i) === dashboardCatFilter) : items;
+  const catItems = items;
 
   if (document.getElementById('stat-total-items')) document.getElementById('stat-total-items').innerText = catItems.length;
 
@@ -5006,13 +5007,13 @@ function updateDashboardStats() {
 
   // Permohonan bulan ini yang mengandungi sekurang-kurangnya satu item dalam kategori dipilih
   const currentMonth = todayISODate().substring(0, 7);
-  const monthReqs = requests.filter(r => r.tarikh && r.tarikh.startsWith(currentMonth) && (r.items || []).some(requestItemInDashboardCat));
+  const monthReqs = requests.filter(r => r.tarikh && r.tarikh.startsWith(currentMonth) && (r.items || []).length > 0);
   if (document.getElementById('stat-month-requests')) document.getElementById('stat-month-requests').innerText = monthReqs.length;
 
   let totalVal = 0;
   requests.forEach(r => {
     (r.items || []).forEach(i => {
-      if (i.status === 'Lulus' && requestItemInDashboardCat(i)) {
+      if (i.status === 'Lulus') {
         const invItem = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
         const price = invItem ? (parseFloat(invItem.harga) || 0) : 0;
         totalVal += toInt(i.qtyLulus) * price;
@@ -5042,7 +5043,7 @@ function renderPieChartAndTopTable() {
     if (unitFilter && r.unit !== unitFilter) return;
     if (r.items) {
       r.items.forEach(i => {
-        if (i.status === 'Lulus' && requestItemInDashboardCat(i)) {
+        if (i.status === 'Lulus') {
           itemTotals[i.nama] = (itemTotals[i.nama] || 0) + toInt(i.qtyLulus);
         }
       });
