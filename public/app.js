@@ -64,7 +64,7 @@ let auth = null;
 let db = null;
 let firestorePermissionDenied = false;
 let firestoreUnsubscribers = [];
-let authMode = 'login'; // 'login' | 'register'
+let authMode = 'login'; // pendaftaran kata laluan tidak lagi digunakan (log masuk Google)
 
 // Config EmailJS (notifikasi permohonan baharu kepada pelulus)
 const EMAILJS_PUBLIC_KEY = "BoCCW085jSDyXH5Am";
@@ -139,7 +139,13 @@ function initFirebase() {
   // Sesi tamat apabila tab/pelayar ditutup (penting untuk komputer klinik yang dikongsi)
   auth.setPersistence(firebase.auth.Auth.Persistence.SESSION)
     .catch(err => console.warn('Gagal menetapkan sesi log masuk:', err))
-    .finally(() => auth.onAuthStateChanged(handleAuthStateChanged));
+    .finally(() => {
+      auth.onAuthStateChanged(handleAuthStateChanged);
+      auth.getRedirectResult().catch(err => {
+        showAuthStep('login');
+        showAuthMessage('error', authErrorMessage(err));
+      });
+    });
 }
 
 // Versi lama menyimpan salinan data dalam localStorage ("Mod Tempatan").
@@ -277,6 +283,15 @@ function startFirestoreListeners() {
     renderApproversTable();
     if (currentUserRole === 'superadmin') syncAllowlist();
   }, onFirestoreError('pengguna')));
+
+  // Permohonan akses (SuperAdmin sahaja)
+  if (currentUserRole === 'superadmin') {
+    firestoreUnsubscribers.push(db.collection('kraipro_access_requests').onSnapshot((qs) => {
+      accessRequests = qs.docs.map(d => ({ id: d.id, ...d.data() }))
+        .sort((x, y) => String(y.createdAt || '').localeCompare(String(x.createdAt || '')));
+      renderAccessRequests();
+    }, onFirestoreError('permohonan akses')));
+  }
 
   // Log audit (pelulus & SuperAdmin sahaja)
   if (isAdminLoggedIn) {
@@ -1052,7 +1067,11 @@ function authErrorMessage(err) {
     'auth/invalid-email': 'Format e-mel tidak sah.',
     'auth/too-many-requests': 'Terlalu banyak cubaan. Sila tunggu beberapa minit dan cuba lagi.',
     'auth/network-request-failed': 'Tiada sambungan internet. Sila cuba lagi.',
-    'auth/operation-not-allowed': 'Log masuk e-mel/kata laluan belum diaktifkan dalam Firebase Console.',
+    'auth/operation-not-allowed': 'Kaedah log masuk ini belum diaktifkan dalam Firebase Console (Authentication → Sign-in method).',
+    'auth/account-exists-with-different-credential': 'E-mel ini sudah mempunyai akaun kata laluan dalam sistem. Sila log masuk dengan kata laluan, atau minta SuperAdmin memadam akaun kata laluan lama di Firebase Console.',
+    'auth/unauthorized-domain': 'Alamat laman ini belum dibenarkan untuk log masuk Google (Firebase Console → Authentication → Settings → Authorized domains).',
+    'auth/popup-blocked': 'Popup log masuk disekat oleh pelayar. Sila benarkan popup untuk laman ini.',
+    'auth/user-disabled': 'Akaun ini telah dinyahaktifkan.',
     'permission-denied': 'Akses ditolak oleh peraturan keselamatan Firestore.'
   };
   return messages[code] || (err && err.message) || String(err);
@@ -1107,6 +1126,41 @@ async function isEmailRegistered(email) {
 
 // Mesej untuk dipaparkan selepas akaun tidak sah dipadam (onAuthStateChanged akan dipanggil semula)
 let pendingAuthNotice = '';
+let pendingAuthNoticeType = 'error';
+
+// Log masuk dengan akaun Google (Gmail / akaun MOH). Pengguna dikenal pasti melalui e-mel,
+// jadi akaun yang didaftarkan SuperAdmin kekal sama (peranan, profil & sejarah permohonan).
+async function handleGoogleSignIn() {
+  if (!auth) return;
+  showAuthMessage(null);
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  const token = showLoadingOverlay('Log masuk dengan Google...');
+  try {
+    await auth.signInWithPopup(provider);
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
+      // Pelayar menyekat popup: guna halaman penuh
+      await auth.signInWithRedirect(provider);
+      return;
+    }
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+    showAuthMessage('error', authErrorMessage(err));
+  } finally {
+    hideLoadingOverlay(token);
+  }
+}
+
+function togglePasswordLogin() {
+  const form = document.getElementById('auth-password-form');
+  if (!form) return;
+  form.classList.toggle('hidden');
+  if (!form.classList.contains('hidden')) {
+    loadSavedLoginEmail();
+    document.getElementById('auth-email')?.focus();
+  }
+}
 
 async function handleAuthSubmit() {
   const email = document.getElementById('auth-email')?.value.trim().toLowerCase();
@@ -1227,6 +1281,8 @@ function resetSessionState() {
   currentUserAllowedCategories = [];
   requests = [];
   requestSources = { recent: [], pending: [], older: [], own: [] };
+  accessRequests = [];
+  pendingAccessRequestId = '';
   olderRequestsLoaded = false;
   lpoCollection = [];
   legacyStateLpo = [];
@@ -1249,8 +1305,9 @@ async function handleAuthStateChanged(user) {
     showAuthStep('login');
     updateAdminStatusUI();
     if (pendingAuthNotice) {
-      showAuthMessage('error', pendingAuthNotice);
+      showAuthMessage(pendingAuthNoticeType || 'error', pendingAuthNotice);
       pendingAuthNotice = '';
+      pendingAuthNoticeType = 'error';
     }
     return;
   }
@@ -1286,14 +1343,8 @@ async function handleAuthStateChanged(user) {
   }
 
   if (!role) {
-    // Akaun dicipta tanpa didaftarkan SuperAdmin: padam akaun log masuk ini
-    pendingAuthNotice = `E-mel ${email} belum didaftarkan oleh SuperAdmin. Akaun log masuk ini telah dibatalkan. Sila hubungi SuperAdmin untuk didaftarkan.`;
-    try {
-      await user.delete();
-    } catch (err) {
-      console.warn('Gagal memadam akaun tidak berdaftar:', err);
-      try { await auth.signOut(); } catch (e) {}
-    }
+    // Belum didaftarkan SuperAdmin: beri peluang memohon akses
+    await showAccessRequestStep(user);
     return;
   }
 
@@ -1339,6 +1390,186 @@ function setSelectValue(select, value) {
 const LOCKED_FIELD_CLASSES = ['bg-slate-100', 'text-slate-700', 'cursor-not-allowed'];
 
 // Isi Nama, Jawatan, Gred & Unit daripada maklumat yang didaftarkan SuperAdmin, dan kunci medan tersebut
+// ---- Permohonan akses (pengguna yang belum didaftarkan) ----
+function fillOptions(select, values, placeholder) {
+  if (!select) return;
+  select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+}
+
+async function showAccessRequestStep(user) {
+  const email = (user.email || '').toLowerCase();
+  const el = document.getElementById('auth-unlisted-email');
+  if (el) el.innerText = email;
+
+  fillOptions(document.getElementById('access-gred'), requestFormOptions('req-gred'), '-- Pilih Gred --');
+  fillOptions(document.getElementById('access-unit'), requestFormOptions('req-unit'), '-- Pilih Unit / Klinik --');
+  const jl = document.getElementById('access-jawatan-list');
+  if (jl) jl.innerHTML = requestFormOptions('req-jawatan').map(o => `<option value="${escapeHtml(o)}"></option>`).join('');
+
+  const setVal = (id, v) => { const x = document.getElementById(id); if (x) x.value = v || ''; };
+  setVal('access-nama', user.displayName || '');
+  setVal('access-jawatan', '');
+
+  const statusEl = document.getElementById('access-request-status');
+  const submitBtn = document.getElementById('access-submit-btn');
+  statusEl?.classList.add('hidden');
+  if (submitBtn) submitBtn.innerHTML = '<i class="fa-solid fa-paper-plane mr-1"></i> Hantar Permohonan Akses';
+
+  // Permohonan sedia ada: papar status & isi semula borang
+  try {
+    const snap = await db.collection('kraipro_access_requests').doc(email).get();
+    if (snap.exists) {
+      const d = snap.data();
+      setVal('access-nama', d.nama);
+      setVal('access-jawatan', d.jawatan);
+      setSelectValue(document.getElementById('access-gred'), d.gred || '');
+      setSelectValue(document.getElementById('access-unit'), d.unit || '');
+      if (statusEl) {
+        statusEl.textContent = `Permohonan akses anda telah dihantar pada ${formatDateTime(d.createdAt)} dan sedang menunggu kelulusan SuperAdmin. Anda boleh mengemas kini maklumat di bawah jika perlu.`;
+        statusEl.classList.remove('hidden');
+      }
+      if (submitBtn) submitBtn.innerHTML = '<i class="fa-solid fa-rotate mr-1"></i> Kemas Kini Permohonan';
+    }
+  } catch (err) {
+    console.warn('Semakan permohonan akses gagal:', err);
+  }
+
+  showAuthStep('unlisted');
+}
+
+async function submitAccessRequest() {
+  const user = auth && auth.currentUser;
+  if (!user) return;
+  const email = (user.email || '').toLowerCase();
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const data = {
+    email,
+    nama: val('access-nama'),
+    jawatan: val('access-jawatan'),
+    gred: val('access-gred'),
+    unit: val('access-unit'),
+    status: 'Pending'
+  };
+  if (!data.nama || !data.jawatan || !data.unit) {
+    showAuthMessage('error', 'Sila isi Nama, Jawatan dan Unit / Klinik.');
+    return;
+  }
+
+  const token = showLoadingOverlay('Menghantar permohonan akses...');
+  try {
+    const ref = db.collection('kraipro_access_requests').doc(email);
+    const existing = await ref.get();
+    const now = new Date().toISOString();
+    await ref.set({ ...data, createdAt: existing.exists ? (existing.data().createdAt || now) : now, dikemaskiniPada: now });
+
+    // Notifikasi e-mel kepada SuperAdmin (tidak menghalang jika gagal)
+    if (window.emailjs && !existing.exists) {
+      emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+        to_email: SUPERADMIN_EMAIL,
+        req_id: 'PERMOHONAN AKSES',
+        applicant_name: data.nama,
+        applicant_jawatan: [data.jawatan, data.gred].filter(Boolean).join(' '),
+        applicant_unit: data.unit,
+        request_date: formatDate(todayISODate()),
+        item_list: `E-mel: ${email}`,
+        from_name: 'Sistem KraiPRO STOR',
+        message: `PERMOHONAN AKSES KRAIPRO STOR\n\nNama: ${data.nama}\nE-mel: ${email}\nJawatan: ${data.jawatan} ${data.gred}\nUnit/Klinik: ${data.unit}\n\nSila log masuk ke KraiPRO STOR > Pentadbir > Pengurusan Pengguna untuk mendaftarkan pengguna ini.`,
+        reply_to: email
+      }, EMAILJS_PUBLIC_KEY).catch(err => console.warn('Notifikasi permohonan akses gagal:', err));
+    }
+
+    hideLoadingOverlay(token);
+    await endUnlistedSession(existing.exists
+      ? 'Permohonan akses anda telah dikemas kini. Anda boleh log masuk selepas SuperAdmin mendaftarkan akaun anda.'
+      : 'Permohonan akses anda telah dihantar kepada SuperAdmin. Anda boleh log masuk selepas akaun anda didaftarkan.', 'info');
+  } catch (err) {
+    hideLoadingOverlay(token);
+    showAuthMessage('error', 'Gagal menghantar permohonan: ' + authErrorMessage(err));
+  }
+}
+
+function leaveUnlistedSession() {
+  endUnlistedSession('', 'error');
+}
+
+// Tamatkan sesi pengguna belum berdaftar: padam akaun log masuk (permohonan akses kekal dalam pangkalan data)
+async function endUnlistedSession(message, type) {
+  pendingAuthNotice = message;
+  pendingAuthNoticeType = type || 'error';
+  const user = auth && auth.currentUser;
+  if (!user) return;
+  try {
+    await user.delete();
+  } catch (err) {
+    try { await auth.signOut(); } catch (e) {}
+  }
+}
+
+// ---- SuperAdmin: senarai permohonan akses ----
+let accessRequests = [];
+let pendingAccessRequestId = '';
+
+function renderAccessRequests() {
+  const card = document.getElementById('access-requests-card');
+  const body = document.getElementById('access-requests-body');
+  const badge = document.getElementById('badge-admin-access');
+  const count = document.getElementById('access-requests-count');
+  const n = accessRequests.length;
+  const show = currentUserRole === 'superadmin' && n > 0;
+  card?.classList.toggle('hidden', !show);
+  badge?.classList.toggle('hidden', !show);
+  if (badge) badge.textContent = n;
+  if (count) count.textContent = n;
+  if (!body) return;
+  body.innerHTML = accessRequests.map(a => `
+    <tr class="bg-white">
+      <td class="p-2 font-bold text-slate-800">${escapeHtml(a.nama)}</td>
+      <td class="p-2">${escapeHtml(a.jawatan)}${a.gred ? ` (${escapeHtml(a.gred)})` : ''}</td>
+      <td class="p-2">${escapeHtml(a.unit)}</td>
+      <td class="p-2 font-semibold text-purple-900">${escapeHtml(a.email)}</td>
+      <td class="p-2 whitespace-nowrap text-slate-500">${escapeHtml(formatDateTime(a.createdAt))}</td>
+      <td class="p-2 text-center whitespace-nowrap">
+        <button type="button" data-id="${escapeHtml(a.id)}" onclick="approveAccessRequest(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg mr-1"><i class="fa-solid fa-user-check mr-1"></i>Daftar</button>
+        <button type="button" data-id="${escapeHtml(a.id)}" onclick="rejectAccessRequest(this.dataset.id)" class="bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-[11px] px-2.5 py-1 rounded-lg"><i class="fa-solid fa-xmark mr-1"></i>Tolak</button>
+      </td>
+    </tr>`).join('');
+}
+
+// Buka borang pengguna dengan maklumat daripada permohonan akses
+function approveAccessRequest(id) {
+  const a = accessRequests.find(x => x.id === id);
+  if (!a || currentUserRole !== 'superadmin') return;
+  openApproverModal();
+  pendingAccessRequestId = a.id;
+  const setVal = (eid, v) => { const el = document.getElementById(eid); if (el) el.value = v || ''; };
+  setVal('modal-approver-nama', a.nama);
+  setVal('modal-approver-jawatan', a.jawatan);
+  setVal('modal-approver-email', a.email);
+  setSelectValue(document.getElementById('modal-approver-gred'), a.gred || '');
+  setSelectValue(document.getElementById('modal-approver-unit'), a.unit || '');
+  setVal('modal-approver-role', 'pemohon');
+  onApproverRoleChange();
+  const title = document.getElementById('approver-modal-title');
+  if (title) title.innerText = 'Daftar Pengguna (Permohonan Akses)';
+}
+
+function rejectAccessRequest(id) {
+  const a = accessRequests.find(x => x.id === id);
+  if (!a || currentUserRole !== 'superadmin') return;
+  showConfirmModal('Tolak Permohonan Akses', `Tolak permohonan akses daripada ${a.nama} (${a.email})?`, async () => {
+    const token = showLoadingOverlay('Menolak permohonan akses...');
+    try {
+      await db.collection('kraipro_access_requests').doc(a.id).delete();
+      addAuditLog('Tolak Permohonan Akses', `Permohonan akses ${a.nama} (${a.email}) ditolak.`);
+      showToast('Permohonan akses ditolak.', 'info');
+    } catch (err) {
+      showToast('Gagal menolak permohonan: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
 function prefillRequesterForm() {
   const p = currentUserProfile || {};
   const fields = [
@@ -1561,6 +1792,7 @@ function openApproverModal(userId = null) {
 function closeApproverModal() {
   const modal = document.getElementById('approver-modal');
   if (modal) modal.classList.add('hidden');
+  pendingAccessRequestId = '';
 }
 
 async function saveApprover() {
@@ -1618,6 +1850,9 @@ async function saveApprover() {
   try {
     const batch = db.batch();
     batch.set(db.collection('kraipro_users').doc(email), userData);
+    // Jika didaftarkan daripada permohonan akses (atau e-mel ini ada permohonan), buang permohonan tersebut
+    if (accessRequests.some(a => a.id === email)) batch.delete(db.collection('kraipro_access_requests').doc(email));
+    if (pendingAccessRequestId && pendingAccessRequestId !== email) batch.delete(db.collection('kraipro_access_requests').doc(pendingAccessRequestId));
     batch.set(db.collection('kraipro_allowlist').doc(email), { aktif: true });
     if (oldId && oldId !== email) {
       batch.delete(db.collection('kraipro_users').doc(oldId));

@@ -81,6 +81,24 @@ service cloud.firestore {
       allow delete: if isSuper();
     }
 
+    // Permohonan akses daripada pengguna yang belum didaftarkan (satu dokumen setiap e-mel).
+    // Pemohon hanya boleh menulis permohonan untuk e-mel sendiri (akaun Google yang disahkan).
+    function validAccessText(field) {
+      return request.resource.data[field] is string && request.resource.data[field].size() <= 120;
+    }
+    match /kraipro_access_requests/{email} {
+      allow get: if isSuper() || (signedIn() && email == myEmail());
+      allow list: if isSuper();
+      allow create, update: if signedIn()
+        && email == myEmail()
+        && request.resource.data.keys().hasOnly(['email', 'nama', 'jawatan', 'gred', 'unit', 'status', 'createdAt', 'dikemaskiniPada'])
+        && request.resource.data.email == myEmail()
+        && request.resource.data.status == 'Pending'
+        && validAccessText('nama') && request.resource.data.nama.size() > 0
+        && validAccessText('jawatan') && validAccessText('gred') && validAccessText('unit');
+      allow delete: if isSuper();
+    }
+
     // Permohonan stok (satu dokumen setiap permohonan)
     match /kraipro_requests/{reqId} {
       allow read: if isApprover()
