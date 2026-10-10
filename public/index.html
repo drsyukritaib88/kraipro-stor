@@ -325,6 +325,11 @@
           <i class="fa-solid fa-paper-plane"></i>
           <span>Permohonan</span>
         </button>
+        <button type="button" id="main-tab-klinik" onclick="switchTab('klinik')" class="main-tab-btn" style="display: none;">
+          <i class="fa-solid fa-house-medical"></i>
+          <span>Stor Klinik</span>
+          <span id="main-tab-klinik-badge" class="hidden bg-amber-400 text-slate-950 text-[9px] font-black px-1.5 py-0.5 rounded-full shadow ml-0.5">0</span>
+        </button>
         <button type="button" id="main-tab-admin" onclick="switchTab('admin')" class="main-tab-btn">
           <i class="fa-solid fa-user-shield"></i>
           <span>Pentadbir</span>
@@ -751,6 +756,64 @@
 
     </section>
 
+    <!-- SEKSYEN: STOR KLINIK (penjaga stor klinik; reka bentuk untuk telefon) -->
+    <section id="content-klinik" class="hidden space-y-4 max-w-3xl mx-auto">
+      <div class="bg-gradient-to-br from-purple-600 to-purple-800 text-white p-5 rounded-3xl shadow-lg shadow-purple-600/25">
+        <p class="text-[11px] font-extrabold uppercase tracking-wider text-purple-200">Stor Klinik</p>
+        <h2 id="klinik-title" class="text-xl sm:text-2xl font-extrabold leading-tight mt-0.5">-</h2>
+        <div class="grid grid-cols-3 gap-2 mt-4">
+          <div class="bg-white/10 rounded-2xl p-3">
+            <p class="text-[10px] font-bold uppercase text-purple-200">Item</p>
+            <p id="klinik-stat-items" class="text-xl font-extrabold">0</p>
+          </div>
+          <div class="bg-white/10 rounded-2xl p-3">
+            <p class="text-[10px] font-bold uppercase text-purple-200">Keluar bulan ini</p>
+            <p id="klinik-stat-keluar" class="text-xl font-extrabold">0</p>
+          </div>
+          <div class="bg-white/10 rounded-2xl p-3">
+            <p class="text-[10px] font-bold uppercase text-purple-200">Habis</p>
+            <p id="klinik-stat-habis" class="text-xl font-extrabold">0</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Baki awal (sekali sahaja) -->
+      <div id="klinik-setup-card" class="hidden bg-white p-4 sm:p-5 rounded-3xl shadow-sm border-2 border-amber-300 space-y-3">
+        <div>
+          <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-clipboard-list text-amber-500 mr-1"></i> Isi Baki Awal Stor Klinik</h3>
+          <p class="text-xs text-slate-500 mt-1">Sekali sahaja: masukkan baki semasa bagi item yang ada di klinik anda (biarkan kosong jika tiada). Selepas disimpan, baki awal dikunci dan hanya SuperAdmin boleh membukanya semula.</p>
+        </div>
+        <input type="search" id="klinik-setup-search" oninput="renderKlinikSetupList()" placeholder="Cari item (nama / kod)..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-purple-500">
+        <div id="klinik-setup-list" class="space-y-1.5 max-h-[55vh] overflow-y-auto pr-1"></div>
+        <div class="flex items-center justify-between gap-3 pt-1">
+          <p id="klinik-setup-count" class="text-xs font-bold text-slate-500">0 item diisi</p>
+          <button type="button" onclick="saveKlinikBakiAwal()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-sm px-5 py-3 rounded-2xl shadow-lg shadow-purple-600/25"><i class="fa-solid fa-lock mr-1"></i> Simpan &amp; Kunci</button>
+        </div>
+      </div>
+
+      <!-- Penerimaan menunggu pengesahan -->
+      <div id="klinik-receipts-card" class="hidden bg-white p-4 sm:p-5 rounded-3xl shadow-sm border-2 border-emerald-300 space-y-3">
+        <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-truck-ramp-box text-emerald-600 mr-1"></i> Stok Sampai: Sahkan Terima</h3>
+        <p class="text-xs text-slate-500 -mt-1">Semak kuantiti yang benar-benar diterima, kemudian sahkan. Stok akan dimasukkan ke stor klinik.</p>
+        <div id="klinik-receipts-list" class="space-y-3"></div>
+      </div>
+
+      <!-- Stok klinik & rekod keluar -->
+      <div id="klinik-stock-card" class="bg-white p-4 sm:p-5 rounded-3xl shadow-sm border border-slate-200/80 space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-box-open text-purple-600 mr-1"></i> Rekod Stok Keluar</h3>
+        </div>
+        <input type="search" id="klinik-search" oninput="renderKlinikStockList()" placeholder="Cari item (nama / kod)..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-purple-500">
+        <div id="klinik-stock-list" class="space-y-2"></div>
+      </div>
+
+      <!-- Sejarah bulan ini -->
+      <div class="bg-white p-4 sm:p-5 rounded-3xl shadow-sm border border-slate-200/80 space-y-3">
+        <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-clock-rotate-left text-purple-600 mr-1"></i> Rekod Bulan Ini</h3>
+        <div id="klinik-history-list" class="space-y-2"></div>
+      </div>
+    </section>
+
     <!-- SEKSYEN 3: PENTADBIR -->
     <section id="content-admin" class="hidden space-y-6">
       
@@ -825,6 +888,11 @@
           <button type="button" id="admin-subtab-laporan" onclick="switchAdminTab('laporan')" class="admin-subtab-btn" style="--tab-accent: #0d9488">
             <i class="fa-solid fa-file-invoice-dollar tab-icon"></i>
             <span>Laporan & KEW.PS-14</span>
+          </button>
+
+          <button type="button" id="admin-subtab-klinik" onclick="switchAdminTab('klinik')" class="admin-subtab-btn" style="--tab-accent: #9333ea">
+            <i class="fa-solid fa-house-medical tab-icon"></i>
+            <span>Pantau Stor Klinik</span>
           </button>
 
           <button type="button" id="admin-subtab-audit" onclick="switchAdminTab('audit')" class="admin-subtab-btn" style="--tab-accent: #64748b">
@@ -1383,6 +1451,44 @@
           </div>
         </div>
 
+        <!-- ADMIN SUBTAB: PANTAU STOR KLINIK -->
+        <div id="admin-sec-klinik" class="hidden space-y-6">
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                  <i class="fa-solid fa-house-medical text-purple-600"></i> Pemantauan Stor Klinik
+                </h3>
+                <p class="text-xs text-slate-500">Baki stok di klinik, stok diterima dan penggunaan (stok keluar) yang direkod oleh penjaga stor klinik.</p>
+              </div>
+              <label class="text-xs font-bold text-slate-700">Bulan
+                <input type="month" id="admin-klinik-month" onchange="setAdminKlinikMonth(this.value)" class="ml-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold">
+              </label>
+            </div>
+            <div class="overflow-x-auto border border-slate-200 rounded-xl">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                    <th class="p-3">Klinik</th>
+                    <th class="p-3">Penjaga Stor</th>
+                    <th class="p-3 text-center">Baki Awal</th>
+                    <th class="p-3 text-center">Bil. Item</th>
+                    <th class="p-3 text-center">Diluluskan (Bulan)</th>
+                    <th class="p-3 text-center">Diterima (Bulan)</th>
+                    <th class="p-3 text-center">Keluar (Bulan)</th>
+                    <th class="p-3 text-center">Belum Sah Terima</th>
+                    <th class="p-3 text-center">Habis / Hampir Habis</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-klinik-summary-body" class="divide-y divide-slate-100 font-medium"></tbody>
+              </table>
+            </div>
+            <p class="text-[11px] text-slate-500"><i class="fa-solid fa-circle-info mr-1"></i>Klik nama klinik untuk butiran setiap item. "Hampir habis" = baki klinik kurang daripada penggunaan bulan dipilih. Tandakan penjaga stor di Pengurusan Pengguna.</p>
+          </div>
+
+          <div id="admin-klinik-detail" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4"></div>
+        </div>
+
         <!-- ADMIN SUBTAB: JEJAK AUDIT -->
         <div id="admin-sec-audit" class="hidden space-y-6">
         <!-- SANDARAN & PEMULIHAN DATA (SuperAdmin sahaja) -->
@@ -1479,6 +1585,13 @@
           </div>
         </div>
         <p class="text-[11px] text-slate-500 -mt-1"><i class="fa-solid fa-circle-info mr-1"></i>Nama, Jawatan, Gred dan Unit akan diisi secara automatik dalam borang permohonan apabila pengguna ini log masuk.</p>
+        <label class="flex items-start gap-2.5 bg-purple-50 border border-purple-200 rounded-xl p-3 cursor-pointer">
+          <input type="checkbox" id="modal-approver-penjaga" class="mt-0.5 w-4 h-4 text-purple-600 rounded">
+          <span>
+            <span class="block font-bold text-purple-900">Penjaga Stor Klinik</span>
+            <span class="block text-[11px] text-slate-600">Boleh sahkan terima stok dan rekod stok keluar bagi Unit / Klinik di atas (tab "Stor Klinik").</span>
+          </span>
+        </label>
         <div>
           <label class="block font-bold text-slate-700 mb-1">Alamat E-mel Rasmi (Akses Log Masuk) <span class="text-rose-500">*</span></label>
           <input type="email" id="modal-approver-email" placeholder="Cth: pelulus1@moh.gov.my" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">

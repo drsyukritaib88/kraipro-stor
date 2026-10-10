@@ -35,6 +35,16 @@ service cloud.firestore {
     function isApprover() {
       return isSuper() || (isListed() && get(profilePath()).data.role == 'pelulus');
     }
+    // Penjaga stor klinik: ditanda oleh SuperAdmin (penjagaStor == true) dengan Unit/Klinik dalam profil
+    function myUnit() {
+      return get(profilePath()).data.get('unit', '');
+    }
+    function isPenjaga() {
+      return isListed() && get(profilePath()).data.get('penjagaStor', false) == true && myUnit() != '';
+    }
+    function isPenjagaOf(unit) {
+      return isPenjaga() && myUnit() == unit;
+    }
 
     // Stok induk, pembekal & LPO (satu dokumen)
     match /kraipro_store/live_inventory_state {
@@ -102,7 +112,8 @@ service cloud.firestore {
     // Permohonan stok (satu dokumen setiap permohonan)
     match /kraipro_requests/{reqId} {
       allow read: if isApprover()
-        || (isMember() && (resource == null || resource.data.ownerEmail == myEmail()));
+        || (isMember() && (resource == null || resource.data.ownerEmail == myEmail()))
+        || (resource != null && isPenjagaOf(resource.data.unit));
 
       // SuperAdmin juga boleh mencipta (untuk migrasi data lama)
       allow create: if isSuper()
@@ -121,8 +132,45 @@ service cloud.firestore {
             && resource.data.ownerEmail == myEmail()
             && resource.data.status == 'Pending'
             && request.resource.data.status == 'Dibatalkan'
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'items', 'tarikhBatal']));
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'items', 'tarikhBatal']))
+        // Penjaga stor klinik mengesahkan penerimaan stok yang diluluskan untuk kliniknya
+        || (resource.data.status == 'Selesai'
+            && isPenjagaOf(resource.data.unit)
+            && resource.data.get('terimaKlinik', '') == 'Menunggu'
+            && request.resource.data.terimaKlinik == 'Diterima'
+            && request.resource.data.terimaKlinikOleh == myEmail()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['terimaKlinik', 'terimaKlinikPada', 'terimaKlinikOleh', 'terimaKlinikNama', 'terimaKlinikQty']));
 
+      allow delete: if isSuper();
+    }
+
+    // Stor klinik (satu dokumen setiap klinik): baki stok di klinik
+    match /kraipro_klinik/{klinikId} {
+      allow read: if isApprover() || (isPenjaga() && (resource == null || resource.data.unit == myUnit()));
+      allow create: if (isSuper() || isPenjagaOf(request.resource.data.unit))
+        && request.resource.data.unit is string
+        && request.resource.data.items is map;
+      // Baki awal yang telah dikunci hanya boleh dibuka semula oleh SuperAdmin
+      allow update: if request.resource.data.items is map
+        && (isSuper()
+            || (isPenjagaOf(resource.data.unit)
+                && request.resource.data.unit == resource.data.unit
+                && (resource.data.get('bakiAwalDikunci', false) == false
+                    || request.resource.data.get('bakiAwalDikunci', false) == true)));
+      allow delete: if isSuper();
+    }
+
+    // Log pergerakan stok klinik (tambah sahaja): terima, keluar, baki awal, pelarasan
+    match /kraipro_klinik_log/{logId} {
+      allow read: if isApprover() || (resource != null && isPenjagaOf(resource.data.unit));
+      allow create: if (isApprover() || isPenjagaOf(request.resource.data.unit))
+        && request.resource.data.userEmail == myEmail()
+        && request.resource.data.jenis in ['terima', 'keluar', 'baki_awal', 'pelarasan']
+        && request.resource.data.bulan is string
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 1000;
+      allow update: if false;
       allow delete: if isSuper();
     }
 

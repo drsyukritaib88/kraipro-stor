@@ -293,6 +293,9 @@ function startFirestoreListeners() {
     }, onFirestoreError('permohonan akses')));
   }
 
+  // Stor klinik (penjaga stor klinik & pentadbir)
+  startKlinikListeners();
+
   // Log audit (pelulus & SuperAdmin sahaja)
   if (isAdminLoggedIn) {
     firestoreUnsubscribers.push(db.collection('kraipro_audit').orderBy('createdAt', 'desc').limit(200).onSnapshot((qs) => {
@@ -670,8 +673,9 @@ let pendingRestore = null;
 async function collectFullBackup() {
   const docsOf = async (name) => (await db.collection(name).get()).docs.map(d => ({ id: d.id, ...d.data() }));
   const stateSnap = await stateDocRef().get();
-  const [requestsAll, usersAll, auditAll, countersAll, lpoAll] = await Promise.all([
-    docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters'), docsOf('kraipro_lpo')
+  const [requestsAll, usersAll, auditAll, countersAll, lpoAll, klinikAll, klinikLogAll] = await Promise.all([
+    docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters'), docsOf('kraipro_lpo'),
+    docsOf('kraipro_klinik'), docsOf('kraipro_klinik_log')
   ]);
   const state = stateSnap.exists ? stateSnap.data() : { items: [], pembekalList: [] };
 
@@ -682,7 +686,7 @@ async function collectFullBackup() {
     createdBy: currentUserEmail,
     projectId: (firebase.app().options || {}).projectId || '',
     counts: backupCounts({ state, requests: requestsAll, users: usersAll, audit: auditAll, lpo: lpoAll }),
-    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll, lpo: lpoAll }
+    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll, lpo: lpoAll, klinik: klinikAll, klinikLog: klinikLogAll }
   };
 }
 
@@ -767,6 +771,10 @@ function validateBackup(obj) {
     if (!Array.isArray(d[k])) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
   });
   if (d.lpo !== undefined && !Array.isArray(d.lpo)) throw new Error('Bahagian "lpo" dalam sandaran tidak sah.');
+  ['klinik', 'klinikLog'].forEach(k => {
+    if (d[k] === undefined) return;
+    if (!Array.isArray(d[k]) || d[k].some(x => !x || !SAFE_ID_RE.test(String(x.id || '')))) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
+  });
   const badLpo = (d.lpo || []).find(l => !l || !SAFE_ID_RE.test(String(l.id || '')) || !Array.isArray(l.items));
   if (badLpo) throw new Error('Terdapat LPO tidak sah dalam sandaran.');
   const badReq = d.requests.find(r => !r || !SAFE_ID_RE.test(String(r.id || '')));
@@ -889,6 +897,21 @@ async function confirmRestoreBackup() {
       if (!backupLpoIds.has(String(l.id))) ops.push(b => b.delete(db.collection('kraipro_lpo').doc(String(l.id))));
     });
     backupLpo.forEach(l => ops.push(b => b.set(db.collection('kraipro_lpo').doc(String(l.id)), { ...strip(l), id: String(l.id), no: String(l.no || ''), items: Array.isArray(l.items) ? l.items : [] })));
+
+    // 6b. Stor klinik: hanya jika sandaran mengandungi data klinik (sandaran lama tidak menyentuh data klinik)
+    if (Array.isArray(d.klinik)) {
+      const backupKlinikIds = new Set(d.klinik.map(k => String(k.id)));
+      (safety.data.klinik || []).forEach(k => {
+        if (!backupKlinikIds.has(String(k.id))) ops.push(b => b.delete(db.collection('kraipro_klinik').doc(String(k.id))));
+      });
+      d.klinik.forEach(k => ops.push(b => b.set(db.collection('kraipro_klinik').doc(String(k.id)), strip(k))));
+    }
+    if (Array.isArray(d.klinikLog)) {
+      const existingKlinikLog = new Set((safety.data.klinikLog || []).map(l => l.id));
+      d.klinikLog.forEach(l => {
+        if (!existingKlinikLog.has(l.id)) ops.push(b => b.set(db.collection('kraipro_klinik_log').doc(String(l.id)), strip(l)));
+      });
+    }
 
     // 7. Stok & pembekal (ganti sepenuhnya; LPO kini dalam koleksi sendiri)
     const st = d.state;
@@ -1293,6 +1316,7 @@ function resetSessionState() {
   draftReqItems = [];
   draftLpoItems = [];
   Object.keys(historyOpenMonths).forEach(k => { historyOpenMonths[k] = null; });
+  resetKlinikState();
 }
 
 async function handleAuthStateChanged(user) {
@@ -1362,7 +1386,9 @@ async function handleAuthStateChanged(user) {
   startInactivityTimer();
   startFirestoreListeners();
   updateLegacyBackupButton();
-  renderAll();
+  // Penjaga stor klinik (bukan pentadbir) terus ke tab Stor Klinik
+  if (isKlinikPenjaga() && !isAdminLoggedIn) switchTab('klinik');
+  else renderAll();
 
   if (role === 'superadmin') migrateLegacyData();
 
@@ -1649,6 +1675,15 @@ function updateAdminStatusUI() {
     document.getElementById('content-dashboard')?.classList.remove('hidden');
   }
 
+  // Tab Stor Klinik: penjaga stor klinik sahaja
+  const klinikTabBtn = document.getElementById('main-tab-klinik');
+  if (klinikTabBtn) klinikTabBtn.style.display = isKlinikPenjaga() ? '' : 'none';
+  const klinikSection = document.getElementById('content-klinik');
+  if (!isKlinikPenjaga() && klinikSection && !klinikSection.classList.contains('hidden')) {
+    klinikSection.classList.add('hidden');
+    document.getElementById('content-dashboard')?.classList.remove('hidden');
+  }
+
   const nama = (currentUserProfile && currentUserProfile.nama) || '';
   const displayName = nama || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail);
   const nameEl = document.getElementById('header-user-name');
@@ -1679,7 +1714,7 @@ function applyRolePermissions() {
   const auditClearBtn = document.getElementById('audit-clear-btn');
 
   // Pegawai Pelulus boleh akses semua kecuali 'Pengurusan Pengguna'
-  ['kelulusan', 'katalog', 'reorder', 'lpo', 'pembekal', 'laporan', 'audit'].forEach(id => {
+  ['kelulusan', 'katalog', 'reorder', 'lpo', 'pembekal', 'laporan', 'klinik', 'audit'].forEach(id => {
     const el = document.getElementById('admin-subtab-' + id);
     if (el) el.style.display = 'flex';
   });
@@ -1725,9 +1760,10 @@ function renderApproversTable() {
     const catsHtml = isPelulus
       ? (a.allowedCategories || []).map(c => `<span class="inline-block bg-purple-100 text-purple-800 px-2 py-0.5 rounded text-[10px] font-bold mr-1 mb-1">${escapeHtml(c)}</span>`).join('')
       : '';
-    const roleBadge = isPelulus
+    const roleBadge = (isPelulus
       ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800">Pelulus</span>'
-      : '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-200 text-slate-700">Pemohon</span>';
+      : '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-200 text-slate-700">Pemohon</span>')
+      + (a.penjagaStor && a.unit ? '<span class="block mt-1 w-fit px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800"><i class="fa-solid fa-house-medical mr-0.5"></i>Penjaga Stor</span>' : '');
     return `
       <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
         <td class="p-3 font-bold text-slate-800">${escapeHtml(a.nama)}</td>
@@ -1756,6 +1792,8 @@ function openApproverModal(userId = null) {
 
   document.querySelectorAll('.approver-cat-checkbox').forEach(cb => cb.checked = false);
   const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  const penjagaCb = document.getElementById('modal-approver-penjaga');
+  if (penjagaCb) penjagaCb.checked = false;
 
   const gredSel = document.getElementById('modal-approver-gred');
   const unitSel = document.getElementById('modal-approver-unit');
@@ -1776,6 +1814,7 @@ function openApproverModal(userId = null) {
     setVal('modal-approver-role', u.role === 'pelulus' ? 'pelulus' : 'pemohon');
     setSelectValue(gredSel, u.gred || '');
     setSelectValue(unitSel, u.unit || '');
+    if (penjagaCb) penjagaCb.checked = !!u.penjagaStor;
 
     (u.allowedCategories || []).forEach(c => {
       document.querySelectorAll('.approver-cat-checkbox').forEach(cb => {
@@ -1816,6 +1855,7 @@ async function saveApprover() {
   const role = document.getElementById('modal-approver-role')?.value === 'pelulus' ? 'pelulus' : 'pemohon';
   const gred = document.getElementById('modal-approver-gred')?.value || '';
   const unit = document.getElementById('modal-approver-unit')?.value || '';
+  const penjagaStor = !!document.getElementById('modal-approver-penjaga')?.checked;
 
   const selectedCats = [];
   if (role === 'pelulus') {
@@ -1838,6 +1878,10 @@ async function saveApprover() {
     showToast('Sila pilih sekurang-kurangnya satu kategori kuasa!', 'error');
     return;
   }
+  if (penjagaStor && !unit) {
+    showToast('Sila pilih Unit / Klinik untuk Penjaga Stor Klinik.', 'error');
+    return;
+  }
   if (email !== oldId && appUsers.some(u => u.id === email)) {
     showToast('E-mel ini telah didaftarkan.', 'error');
     return;
@@ -1850,6 +1894,7 @@ async function saveApprover() {
     gred,
     unit,
     role,
+    penjagaStor,
     allowedCategories: selectedCats,
     dikemaskiniPada: new Date().toISOString()
   };
@@ -1928,6 +1973,8 @@ function switchAdminTab(subtabId) {
     renderMasterPembekalTable();
   } else if (subtabId === 'laporan') {
     renderKewPs14Table();
+  } else if (subtabId === 'klinik') {
+    renderAdminKlinik();
   } else if (subtabId === 'audit') {
     renderAuditTrail();
   }
@@ -3384,7 +3431,9 @@ function approveRequest(reqId) {
           pelulusNama: pelulusNama,
           pelulusJawatan: pelulusJawatan,
           pelulusEmail: currentUserEmail,
-          tarikhLulus: todayISODate()
+          tarikhLulus: todayISODate(),
+          // Stok yang diluluskan menunggu pengesahan terima oleh penjaga stor klinik
+          ...(r.unit && newItems.some(i => i.qtyLulus > 0) ? { terimaKlinik: 'Menunggu' } : {})
         });
       });
 
@@ -3443,6 +3492,9 @@ function cancelApprovedRequest(reqId) {
         const r = rSnap.data();
         if (r.status !== 'Selesai') throw new Error('Hanya permohonan yang telah diluluskan boleh dibatalkan.');
 
+        // Jika klinik telah sahkan terima, stok tersebut ditolak semula dari stor klinik
+        const klinikSnap = r.terimaKlinik === 'Diterima' && r.unit ? await tx.get(klinikRef(r.unit)) : null;
+
         const newItems = (r.items || []).map(i => {
           if (i.status === 'Lulus' && (i.qtyLulus || 0) > 0) {
             const invItem = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
@@ -3451,7 +3503,12 @@ function cancelApprovedRequest(reqId) {
           return { ...i, status: 'Dibatalkan' };
         });
 
-        tx.update(requestRef(req.id), { items: newItems, status: 'Dibatalkan', tarikhBatal: todayISODate() });
+        if (klinikSnap && klinikSnap.exists) applyKlinikReversal(tx, klinikSnap, r);
+
+        tx.update(requestRef(req.id), {
+          items: newItems, status: 'Dibatalkan', tarikhBatal: todayISODate(),
+          ...(r.terimaKlinik ? { terimaKlinik: 'Dibatalkan' } : {})
+        });
       });
 
       addAuditLog("Batalkan Permohonan", `Permohonan ${req.id} dibatalkan oleh SuperAdmin. Stok dipulangkan ke inventori.`);
@@ -5080,6 +5137,732 @@ function renderPieChartAndTopTable() {
 
 
 // ------------------------------------------
+// 17b. STOR KLINIK (PENJAGA STOR KLINIK & PEMANTAUAN STOR DAERAH)
+//   kraipro_klinik/{klinikId}  : { unit, items: { [itemId]: { sku, nama, unitBungkus, kategori, baki } }, bakiAwalDikunci }
+//   kraipro_klinik_log/{auto}  : pergerakan stok klinik (terima / keluar / baki_awal / pelarasan), ditapis ikut 'bulan'
+// ------------------------------------------
+let klinikDocs = [];             // pentadbir: semua klinik; penjaga: klinik sendiri
+let klinikPendingReceipts = [];  // permohonan diluluskan yang menunggu sah terima (penjaga)
+let klinikLogs = [];             // log bulan semasa / bulan dipilih
+let klinikLogUnsub = null;
+let klinikDraftQty = {};         // itemId -> kuantiti keluar dipilih
+let klinikSetupDraft = {};       // itemId -> baki awal
+let adminKlinikMonth = '';
+let adminKlinikSelected = '';
+
+const KLINIK_LOG_STYLE = {
+  terima: { label: 'Terima', cls: 'bg-emerald-100 text-emerald-800', icon: 'fa-truck-ramp-box', sign: '+' },
+  keluar: { label: 'Keluar', cls: 'bg-purple-100 text-purple-800', icon: 'fa-arrow-right-from-bracket', sign: '−' },
+  baki_awal: { label: 'Baki Awal', cls: 'bg-amber-100 text-amber-800', icon: 'fa-clipboard-list', sign: '' },
+  pelarasan: { label: 'Pelarasan', cls: 'bg-rose-100 text-rose-800', icon: 'fa-scale-balanced', sign: '−' }
+};
+
+function resetKlinikState() {
+  if (klinikLogUnsub) { try { klinikLogUnsub(); } catch (e) {} }
+  klinikLogUnsub = null;
+  klinikDocs = [];
+  klinikPendingReceipts = [];
+  klinikLogs = [];
+  klinikDraftQty = {};
+  klinikSetupDraft = {};
+  adminKlinikMonth = '';
+  adminKlinikSelected = '';
+}
+
+function klinikIdFor(unit) {
+  const slug = String(unit || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
+  return 'klinik_' + (slug || 'tiada');
+}
+
+function klinikRef(unit) {
+  return db.collection('kraipro_klinik').doc(klinikIdFor(unit));
+}
+
+function isKlinikPenjaga() {
+  return !!(currentUserProfile && currentUserProfile.penjagaStor && currentUserProfile.unit);
+}
+
+function myKlinikUnit() {
+  return isKlinikPenjaga() ? String(currentUserProfile.unit) : '';
+}
+
+function klinikDocFor(unit) {
+  return klinikDocs.find(k => k.unit === unit) || null;
+}
+
+function sanitizeKlinik(d) {
+  const out = {};
+  Object.entries(d.items && typeof d.items === 'object' ? d.items : {}).forEach(([id, it]) => {
+    if (it && typeof it === 'object') out[id] = { ...it, baki: toInt(it.baki) };
+  });
+  return { ...d, unit: String(d.unit || ''), items: out };
+}
+
+function klinikItemList(doc) {
+  return doc ? Object.entries(doc.items).map(([id, it]) => ({ ...it, id })) : [];
+}
+
+// Kunci item stor klinik bagi satu baris permohonan (ID item stok induk)
+function klinikItemKey(reqItem) {
+  if (reqItem.itemId) return String(reqItem.itemId);
+  const inv = items.find(it => it.sku === reqItem.sku);
+  return String(inv ? inv.id : (reqItem.sku || ''));
+}
+
+function klinikMatches(it, q) {
+  return !q || String(it.nama || '').toLowerCase().includes(q) || String(it.sku || '').toLowerCase().includes(q);
+}
+
+function currentMonthKey() {
+  return todayISODate().slice(0, 7);
+}
+
+function klinikLogEntry(jenis, unit, logItems, extra = {}) {
+  return {
+    jenis,
+    unit,
+    klinikId: klinikIdFor(unit),
+    items: logItems,
+    tarikh: todayISODate(),
+    bulan: currentMonthKey(),
+    createdAt: new Date().toISOString(),
+    userEmail: currentUserEmail,
+    userNama: (currentUserProfile && currentUserProfile.nama) || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail),
+    ...extra
+  };
+}
+
+function renderKlinikAll() {
+  renderKlinikView();
+  renderAdminKlinik();
+}
+
+function startKlinikListeners() {
+  if (isAdminLoggedIn) {
+    firestoreUnsubscribers.push(db.collection('kraipro_klinik').onSnapshot((qs) => {
+      klinikDocs = qs.docs.map(d => sanitizeKlinik({ ...d.data(), id: d.id }));
+      renderKlinikAll();
+    }, onFirestoreError('stor klinik')));
+  } else if (isKlinikPenjaga()) {
+    firestoreUnsubscribers.push(klinikRef(myKlinikUnit()).onSnapshot((snap) => {
+      klinikDocs = snap.exists ? [sanitizeKlinik({ ...snap.data(), id: snap.id })] : [];
+      renderKlinikAll();
+    }, onFirestoreError('stor klinik')));
+  }
+
+  if (isKlinikPenjaga()) {
+    firestoreUnsubscribers.push(db.collection('kraipro_requests')
+      .where('unit', '==', myKlinikUnit())
+      .where('terimaKlinik', '==', 'Menunggu')
+      .onSnapshot((qs) => {
+        klinikPendingReceipts = qs.docs.map(d => sanitizeRequest(d.data())).filter(Boolean)
+          .sort((a, b) => String(a.tarikhLulus || '').localeCompare(String(b.tarikhLulus || '')) || String(a.id).localeCompare(String(b.id)));
+        renderKlinikAll();
+      }, onFirestoreError('penerimaan klinik')));
+  }
+
+  subscribeKlinikLogs();
+}
+
+// Log satu bulan sahaja (jimat bacaan): pentadbir = semua klinik bagi bulan dipilih; penjaga = klinik sendiri bulan ini
+function subscribeKlinikLogs() {
+  if (klinikLogUnsub) { try { klinikLogUnsub(); } catch (e) {} }
+  klinikLogUnsub = null;
+  klinikLogs = [];
+  if (!db || (!isAdminLoggedIn && !isKlinikPenjaga())) return;
+
+  let q = db.collection('kraipro_klinik_log').where('bulan', '==', isAdminLoggedIn ? (adminKlinikMonth || currentMonthKey()) : currentMonthKey());
+  if (!isAdminLoggedIn) q = q.where('unit', '==', myKlinikUnit());
+  klinikLogUnsub = q.onSnapshot((qs) => {
+    klinikLogs = qs.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    renderKlinikAll();
+  }, onFirestoreError('log klinik'));
+}
+
+// ---- Paparan penjaga stor klinik (telefon) ----
+function renderKlinikView() {
+  if (!isKlinikPenjaga() || !document.getElementById('content-klinik')) return;
+  const unit = myKlinikUnit();
+  const doc = klinikDocFor(unit);
+  const locked = !!(doc && doc.bakiAwalDikunci);
+  const list = klinikItemList(doc);
+  const month = currentMonthKey();
+  const keluarTotal = klinikLogs
+    .filter(l => l.unit === unit && l.bulan === month && l.jenis === 'keluar')
+    .reduce((s, l) => s + (l.items || []).reduce((t, i) => t + toInt(i.qty), 0), 0);
+
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setText('klinik-title', unit);
+  setText('klinik-stat-items', list.filter(i => i.baki > 0).length);
+  setText('klinik-stat-keluar', keluarTotal);
+  setText('klinik-stat-habis', list.filter(i => i.baki <= 0).length);
+
+  const badge = document.getElementById('main-tab-klinik-badge');
+  if (badge) {
+    badge.textContent = klinikPendingReceipts.length;
+    badge.classList.toggle('hidden', klinikPendingReceipts.length === 0);
+  }
+
+  document.getElementById('klinik-setup-card')?.classList.toggle('hidden', locked);
+  document.getElementById('klinik-stock-card')?.classList.toggle('hidden', !locked);
+  if (!locked) renderKlinikSetupList();
+  renderKlinikReceipts();
+  renderKlinikStockList();
+  renderKlinikHistory();
+}
+
+function renderKlinikSetupList() {
+  const box = document.getElementById('klinik-setup-list');
+  if (!box) return;
+  updateKlinikSetupCount();
+  // Jangan bina semula senarai semasa pengguna sedang menaip kuantiti
+  if (box.contains(document.activeElement)) return;
+
+  // Baki awal dibuka semula oleh SuperAdmin: mulakan dengan baki sedia ada
+  const doc = klinikDocFor(myKlinikUnit());
+  if (doc && Object.keys(klinikSetupDraft).length === 0) {
+    Object.entries(doc.items).forEach(([id, it]) => { if (it.baki > 0) klinikSetupDraft[id] = it.baki; });
+    updateKlinikSetupCount();
+  }
+
+  const q = (document.getElementById('klinik-setup-search')?.value || '').trim().toLowerCase();
+  const list = items.filter(i => klinikMatches(i, q));
+  if (list.length === 0) {
+    box.innerHTML = '<p class="text-center text-sm text-slate-400 py-6">Tiada item dijumpai.</p>';
+    return;
+  }
+  box.innerHTML = sortedCategoryNames(list).map(cat => {
+    const rows = list.filter(i => itemCategoryName(i) === cat)
+      .sort((a, b) => String(a.nama).localeCompare(String(b.nama)))
+      .map(i => {
+        const v = klinikSetupDraft[String(i.id)];
+        return `
+        <div class="flex items-center gap-3 rounded-xl px-3 py-2 ${v ? 'bg-purple-50 border border-purple-200' : 'bg-slate-50 border border-transparent'}">
+          <div class="min-w-0 flex-1">
+            <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(i.nama)}</p>
+            <p class="text-[11px] text-slate-500">${escapeHtml(i.sku)} · ${escapeHtml(i.unit || '')}</p>
+          </div>
+          <input type="number" min="0" inputmode="numeric" placeholder="0" data-id="${escapeHtml(i.id)}" value="${v ? v : ''}"
+            oninput="setKlinikSetupQty(this.dataset.id, this.value)" aria-label="Baki awal ${escapeHtml(i.nama)}"
+            class="w-20 shrink-0 bg-white border border-slate-300 rounded-xl px-2 py-2.5 text-center text-sm font-extrabold focus:ring-2 focus:ring-purple-500">
+        </div>`;
+      }).join('');
+    return `<p class="text-[11px] font-extrabold uppercase tracking-wider text-purple-700 pt-2">${escapeHtml(cat)}</p>${rows}`;
+  }).join('');
+}
+
+function setKlinikSetupQty(id, value) {
+  const n = toInt(value);
+  if (n > 0) klinikSetupDraft[id] = n;
+  else delete klinikSetupDraft[id];
+  updateKlinikSetupCount();
+}
+
+function updateKlinikSetupCount() {
+  const el = document.getElementById('klinik-setup-count');
+  if (el) el.textContent = `${Object.keys(klinikSetupDraft).length} item diisi`;
+}
+
+function saveKlinikBakiAwal() {
+  const unit = myKlinikUnit();
+  if (!unit) return;
+  const entries = Object.entries(klinikSetupDraft)
+    .map(([id, qty]) => ({ inv: items.find(i => String(i.id) === String(id)), qty: toInt(qty) }))
+    .filter(e => e.inv && e.qty > 0);
+  const msg = entries.length
+    ? `Simpan baki awal ${entries.length} item untuk ${unit}? Selepas disimpan, baki awal akan dikunci.`
+    : `Tiada item diisi. Simpan stor ${unit} sebagai kosong dan kunci baki awal?`;
+
+  showConfirmModal('Simpan Baki Awal', msg, async () => {
+    const token = showLoadingOverlay('Menyimpan baki awal stor klinik...');
+    try {
+      const itemsMap = {};
+      const logItems = [];
+      entries.forEach(({ inv, qty }) => {
+        const id = String(inv.id);
+        itemsMap[id] = { sku: inv.sku || '', nama: inv.nama || '', unitBungkus: inv.unit || '', kategori: inv.kategori || '', baki: qty };
+        logItems.push({ itemId: id, sku: inv.sku || '', nama: inv.nama || '', unit: inv.unit || '', qty, bakiSelepas: qty });
+      });
+      const now = new Date().toISOString();
+      await db.runTransaction(async (tx) => {
+        const ref = klinikRef(unit);
+        const snap = await tx.get(ref);
+        if (snap.exists && snap.data().bakiAwalDikunci) throw new Error('Baki awal telah dikunci. Hubungi SuperAdmin untuk membukanya semula.');
+        tx.set(ref, { unit, items: itemsMap, bakiAwalDikunci: true, bakiAwalPada: now, bakiAwalOleh: currentUserEmail, dikemaskiniPada: now });
+        tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('baki_awal', unit, logItems));
+      });
+      klinikSetupDraft = {};
+      addAuditLog('Baki Awal Stor Klinik', `${unit}: baki awal ${logItems.length} item disimpan & dikunci.`);
+      showToast('Baki awal stor klinik disimpan & dikunci.', 'success');
+    } catch (err) {
+      showToast('Gagal menyimpan baki awal: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
+function renderKlinikReceipts() {
+  const card = document.getElementById('klinik-receipts-card');
+  const box = document.getElementById('klinik-receipts-list');
+  if (!card || !box) return;
+  card.classList.toggle('hidden', klinikPendingReceipts.length === 0);
+  if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+
+  const doc = klinikDocFor(myKlinikUnit());
+  const locked = !!(doc && doc.bakiAwalDikunci);
+  box.innerHTML = klinikPendingReceipts.map(r => {
+    const lines = (r.items || []).map((i, idx) => ({ i, idx })).filter(x => x.i.status === 'Lulus' && toInt(x.i.qtyLulus) > 0);
+    return `
+      <div class="border border-slate-200 rounded-2xl p-3 space-y-2">
+        <div>
+          <p class="text-sm font-extrabold text-slate-900">${escapeHtml(r.id)}</p>
+          <p class="text-[11px] text-slate-500">Diluluskan ${escapeHtml(formatDate(r.tarikhLulus))} · Pemohon: ${escapeHtml(r.nama)}</p>
+        </div>
+        ${lines.map(({ i, idx }) => {
+          const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+          return `
+          <div class="flex items-center gap-3 bg-slate-50 rounded-xl px-3 py-2">
+            <div class="min-w-0 flex-1">
+              <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(i.nama)}</p>
+              <p class="text-[11px] text-slate-500">Diluluskan: <b>${toInt(i.qtyLulus)}</b> ${escapeHtml((inv && inv.unit) || '')}</p>
+            </div>
+            <label class="text-[10px] font-bold text-slate-500 text-center shrink-0">Diterima
+              <input type="number" min="0" max="${toInt(i.qtyLulus)}" inputmode="numeric" id="klinik-terima-${escapeHtml(r.id)}-${idx}" value="${toInt(i.qtyLulus)}"
+                class="block w-20 mt-0.5 bg-white border border-slate-300 rounded-xl px-2 py-2 text-center text-sm font-extrabold text-slate-900 focus:ring-2 focus:ring-emerald-500">
+            </label>
+          </div>`;
+        }).join('')}
+        <button type="button" data-id="${escapeHtml(r.id)}" onclick="confirmKlinikReceipt(this.dataset.id)" ${locked ? '' : 'disabled'}
+          class="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-extrabold text-sm py-3 rounded-2xl shadow">
+          <i class="fa-solid fa-check-double mr-1"></i> Sahkan Terima
+        </button>
+        ${locked ? '' : '<p class="text-[11px] font-bold text-amber-700 text-center">Isi baki awal stor klinik dahulu sebelum mengesahkan penerimaan.</p>'}
+      </div>`;
+  }).join('');
+}
+
+function confirmKlinikReceipt(reqId) {
+  const req = klinikPendingReceipts.find(r => r.id === reqId);
+  const unit = myKlinikUnit();
+  if (!req || !unit) return;
+
+  const qtyByIdx = {};
+  let lines = 0, shortLines = 0;
+  (req.items || []).forEach((i, idx) => {
+    const lulus = toInt(i.qtyLulus);
+    if (i.status !== 'Lulus' || lulus <= 0) return;
+    const el = document.getElementById(`klinik-terima-${req.id}-${idx}`);
+    const qty = Math.min(lulus, Math.max(0, el ? toInt(el.value) : lulus));
+    qtyByIdx[idx] = qty;
+    lines++;
+    if (qty < lulus) shortLines++;
+  });
+
+  const msg = `Sahkan penerimaan ${req.id} (${lines} item) ke stor ${unit}?` +
+    (shortLines ? ` ${shortLines} item diterima KURANG daripada kuantiti diluluskan.` : '');
+  showConfirmModal('Sahkan Terima Stok', msg, async () => {
+    const token = showLoadingOverlay(`Merekod penerimaan ${req.id}...`);
+    try {
+      await db.runTransaction(async (tx) => {
+        const rRef = requestRef(req.id);
+        const kRef = klinikRef(unit);
+        const rSnap = await tx.get(rRef);
+        const kSnap = await tx.get(kRef);
+        if (!rSnap.exists) throw new Error('Permohonan tidak dijumpai.');
+        const r = rSnap.data();
+        if (r.status !== 'Selesai' || r.terimaKlinik !== 'Menunggu') throw new Error('Penerimaan ini telah direkodkan atau dibatalkan.');
+        if (!kSnap.exists || !kSnap.data().bakiAwalDikunci) throw new Error('Sila isi baki awal stor klinik dahulu.');
+
+        const kItems = sanitizeKlinik(kSnap.data()).items;
+        const changes = {};
+        const logItems = [];
+        const terimaQty = (r.items || []).map((i, idx) => {
+          const qty = toInt(qtyByIdx[idx]);
+          if (qty <= 0) return 0;
+          const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+          const id = klinikItemKey(i);
+          const cur = changes[id] || kItems[id] || {
+            sku: i.sku || '', nama: i.nama || (inv && inv.nama) || '', unitBungkus: (inv && inv.unit) || '', kategori: i.kategori || (inv && inv.kategori) || '', baki: 0
+          };
+          changes[id] = { ...cur, baki: toInt(cur.baki) + qty };
+          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: changes[id].baki });
+          return qty;
+        });
+
+        const now = new Date().toISOString();
+        tx.set(kRef, { items: changes, dikemaskiniPada: now }, { merge: true });
+        tx.update(rRef, {
+          terimaKlinik: 'Diterima',
+          terimaKlinikPada: now,
+          terimaKlinikOleh: currentUserEmail,
+          terimaKlinikNama: (currentUserProfile && currentUserProfile.nama) || currentUserEmail,
+          terimaKlinikQty: terimaQty
+        });
+        tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('terima', unit, logItems, { ref: req.id }));
+      });
+      addAuditLog('Sah Terima Stor Klinik', `${unit}: penerimaan ${req.id} disahkan${shortLines ? ` (${shortLines} item kurang diterima)` : ''}.`);
+      showToast(`Penerimaan ${req.id} disahkan. Stok klinik dikemaskini.`, 'success');
+    } catch (err) {
+      showToast('Gagal mengesahkan penerimaan: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
+// Pembatalan permohonan oleh SuperAdmin selepas klinik sahkan terima: tolak semula dari stor klinik
+// (dipanggil dalam transaksi; klinikSnap mesti dibaca sebelum sebarang penulisan)
+function applyKlinikReversal(tx, klinikSnap, r) {
+  const kItems = sanitizeKlinik(klinikSnap.data()).items;
+  const qtys = Array.isArray(r.terimaKlinikQty) ? r.terimaKlinikQty : [];
+  const changes = {};
+  const logItems = [];
+  (r.items || []).forEach((i, idx) => {
+    const qty = toInt(qtys[idx]);
+    if (qty <= 0) return;
+    const id = klinikItemKey(i);
+    const cur = changes[id] || kItems[id];
+    if (!cur) return;
+    const baki = Math.max(0, toInt(cur.baki) - qty);
+    changes[id] = { ...cur, baki };
+    logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: baki });
+  });
+  if (logItems.length === 0) return;
+  tx.set(klinikSnap.ref, { items: changes, dikemaskiniPada: new Date().toISOString() }, { merge: true });
+  tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('pelarasan', r.unit, logItems, { ref: r.id, catatan: 'Permohonan dibatalkan oleh SuperAdmin' }));
+}
+
+function renderKlinikStockList() {
+  const box = document.getElementById('klinik-stock-list');
+  if (!box) return;
+  if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+
+  const doc = klinikDocFor(myKlinikUnit());
+  if (!doc || !doc.bakiAwalDikunci) {
+    box.innerHTML = '';
+    return;
+  }
+  const q = (document.getElementById('klinik-search')?.value || '').trim().toLowerCase();
+  const all = klinikItemList(doc);
+  const list = all.filter(it => klinikMatches(it, q))
+    .sort((a, b) => (b.baki > 0) - (a.baki > 0) || String(a.nama).localeCompare(String(b.nama)));
+
+  if (list.length === 0) {
+    box.innerHTML = `<p class="text-center text-sm text-slate-400 py-6">${all.length ? 'Tiada item dijumpai.' : 'Tiada stok di klinik lagi. Stok akan bertambah apabila anda sahkan terima stok daripada stor daerah.'}</p>`;
+    return;
+  }
+
+  box.innerHTML = list.map(it => {
+    const id = escapeHtml(it.id);
+    const habis = it.baki <= 0;
+    const qty = Math.min(Math.max(1, toInt(klinikDraftQty[it.id]) || 1), Math.max(1, it.baki));
+    return `
+      <div class="flex items-center gap-3 border border-slate-200 rounded-2xl p-3 ${habis ? 'bg-slate-50' : 'bg-white'}">
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-extrabold ${habis ? 'text-slate-400' : 'text-slate-900'} leading-snug">${escapeHtml(it.nama)}</p>
+          <p class="text-[11px] text-slate-400">${escapeHtml(it.sku)}</p>
+          <p class="text-xs font-extrabold mt-1 ${habis ? 'text-rose-600' : 'text-emerald-700'}">Baki: ${it.baki} ${escapeHtml(it.unitBungkus || '')}</p>
+        </div>
+        ${habis ? '<span class="shrink-0 text-xs font-black text-rose-600 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">Habis</span>' : `
+        <div class="shrink-0 flex flex-col items-stretch gap-2 w-[8.5rem]">
+          <div class="flex items-center justify-between bg-slate-100 rounded-xl">
+            <button type="button" data-id="${id}" onclick="stepKlinikQty(this.dataset.id, -1)" aria-label="Kurangkan" class="w-10 h-10 text-xl font-black text-slate-600 rounded-xl active:bg-slate-200">−</button>
+            <input type="number" min="1" max="${it.baki}" inputmode="numeric" data-id="${id}" value="${qty}" onchange="setKlinikQty(this.dataset.id, this.value)" aria-label="Kuantiti keluar"
+              class="w-12 h-10 bg-transparent text-center text-base font-extrabold text-slate-900 focus:outline-none">
+            <button type="button" data-id="${id}" onclick="stepKlinikQty(this.dataset.id, 1)" aria-label="Tambah" class="w-10 h-10 text-xl font-black text-slate-600 rounded-xl active:bg-slate-200">+</button>
+          </div>
+          <button type="button" data-id="${id}" onclick="recordKlinikUsage(this.dataset.id)" class="bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-extrabold text-sm py-2.5 rounded-xl shadow shadow-purple-600/25">
+            <i class="fa-solid fa-arrow-right-from-bracket mr-1"></i> Keluar
+          </button>
+        </div>`}
+      </div>`;
+  }).join('');
+}
+
+function klinikItemBaki(itemId) {
+  const doc = klinikDocFor(myKlinikUnit());
+  const it = doc && doc.items[itemId];
+  return it ? it.baki : 0;
+}
+
+function setKlinikQty(itemId, value) {
+  klinikDraftQty[itemId] = Math.min(Math.max(1, toInt(value)), Math.max(1, klinikItemBaki(itemId)));
+}
+
+function stepKlinikQty(itemId, delta) {
+  const cur = toInt(klinikDraftQty[itemId]) || 1;
+  klinikDraftQty[itemId] = Math.min(Math.max(1, cur + delta), Math.max(1, klinikItemBaki(itemId)));
+  renderKlinikStockList();
+}
+
+async function recordKlinikUsage(itemId) {
+  const unit = myKlinikUnit();
+  const doc = klinikDocFor(unit);
+  const it = doc && doc.items[itemId];
+  if (!it) return;
+  // Ambil nilai terkini dari kotak kuantiti (jika pengguna menaip tanpa keluar dari kotak)
+  const input = [...document.querySelectorAll('#klinik-stock-list input[data-id]')].find(el => el.dataset.id === itemId);
+  if (input) setKlinikQty(itemId, input.value);
+  const qty = Math.max(1, toInt(klinikDraftQty[itemId]) || 1);
+  if (qty > it.baki) {
+    showToast(`Baki ${it.nama} tidak mencukupi (baki ${it.baki}).`, 'error');
+    return;
+  }
+
+  const token = showLoadingOverlay(`Merekod ${qty} ${it.unitBungkus || ''} ${it.nama} keluar...`);
+  try {
+    let bakiBaru = 0;
+    await db.runTransaction(async (tx) => {
+      const ref = klinikRef(unit);
+      const snap = await tx.get(ref);
+      const cur = snap.exists ? sanitizeKlinik(snap.data()).items[itemId] : null;
+      if (!cur) throw new Error('Item tidak dijumpai dalam stor klinik.');
+      if (qty > cur.baki) throw new Error(`Baki tidak mencukupi (baki ${cur.baki}).`);
+      bakiBaru = cur.baki - qty;
+      tx.set(ref, { items: { [itemId]: { ...cur, baki: bakiBaru } }, dikemaskiniPada: new Date().toISOString() }, { merge: true });
+      tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('keluar', unit, [
+        { itemId, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: bakiBaru }
+      ]));
+    });
+    delete klinikDraftQty[itemId];
+    showToast(`${qty} ${it.unitBungkus || ''} ${it.nama} direkod keluar. Baki: ${bakiBaru}.`, 'success');
+  } catch (err) {
+    showToast('Gagal merekod stok keluar: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay(token);
+  }
+}
+
+function klinikLogRowHtml(l) {
+  const st = KLINIK_LOG_STYLE[l.jenis] || { label: l.jenis, cls: 'bg-slate-100 text-slate-700', icon: 'fa-circle', sign: '' };
+  const itemsText = (l.items || []).slice(0, 6)
+    .map(i => `${escapeHtml(i.nama)} <b>${st.sign}${toInt(i.qty)}</b>`).join(', ') +
+    ((l.items || []).length > 6 ? ` <span class="text-slate-400">+${l.items.length - 6} lagi</span>` : '');
+  return `
+    <div class="flex items-start gap-3 border-b border-slate-100 pb-2 last:border-0">
+      <span class="shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${st.cls}"><i class="fa-solid ${st.icon} text-sm"></i></span>
+      <div class="min-w-0 flex-1">
+        <p class="text-xs"><span class="font-extrabold">${escapeHtml(st.label)}</span>${l.ref ? ` · ${escapeHtml(l.ref)}` : ''}
+          <span class="text-slate-400">· ${escapeHtml(formatDateTime(l.createdAt))}</span></p>
+        <p class="text-[13px] text-slate-700 leading-snug">${itemsText || '<span class="text-slate-400">Tiada item</span>'}</p>
+        <p class="text-[11px] text-slate-400">${escapeHtml(l.userNama || l.userEmail || '')}${l.catatan ? ` · ${escapeHtml(l.catatan)}` : ''}</p>
+      </div>
+    </div>`;
+}
+
+function renderKlinikHistory() {
+  const box = document.getElementById('klinik-history-list');
+  if (!box) return;
+  const unit = myKlinikUnit();
+  const month = currentMonthKey();
+  const logs = klinikLogs.filter(l => l.unit === unit && l.bulan === month).slice(0, 50);
+  box.innerHTML = logs.length
+    ? logs.map(klinikLogRowHtml).join('')
+    : '<p class="text-center text-sm text-slate-400 py-4">Tiada rekod bulan ini.</p>';
+}
+
+// ---- Pemantauan stor klinik (Pentadbir) ----
+function setAdminKlinikMonth(value) {
+  if (!/^\d{4}-\d{2}$/.test(value || '')) return;
+  adminKlinikMonth = value;
+  subscribeKlinikLogs();
+  renderAdminKlinik();
+}
+
+function selectAdminKlinik(unit) {
+  adminKlinikSelected = adminKlinikSelected === unit ? '' : unit;
+  renderAdminKlinik();
+  if (adminKlinikSelected) document.getElementById('admin-klinik-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function adminKlinikUnits() {
+  const units = new Set(klinikDocs.map(k => k.unit));
+  appUsers.forEach(u => { if (u.penjagaStor && u.unit) units.add(u.unit); });
+  return [...units].filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+
+// Jumlah mengikut item bagi satu klinik & bulan: diluluskan (permohonan), diterima & keluar (log klinik)
+function klinikMonthStats(unit, month) {
+  const sumLogs = (jenis) => {
+    const m = {};
+    klinikLogs.filter(l => l.unit === unit && l.bulan === month && l.jenis === jenis)
+      .forEach(l => (l.items || []).forEach(i => {
+        const k = String(i.itemId || i.sku || '');
+        m[k] = (m[k] || 0) + toInt(i.qty);
+      }));
+    return m;
+  };
+  const lulus = {};
+  requests.filter(r => r.unit === unit && r.status === 'Selesai' && String(r.tarikhLulus || '').slice(0, 7) === month)
+    .forEach(r => (r.items || []).forEach(i => {
+      if (i.status === 'Lulus' && toInt(i.qtyLulus) > 0) {
+        const k = klinikItemKey(i);
+        lulus[k] = (lulus[k] || 0) + toInt(i.qtyLulus);
+      }
+    }));
+  return {
+    lulus,
+    terima: sumLogs('terima'),
+    keluar: sumLogs('keluar'),
+    menunggu: requests.filter(r => r.unit === unit && r.terimaKlinik === 'Menunggu').length
+  };
+}
+
+function sumValues(obj) {
+  return Object.values(obj).reduce((s, v) => s + v, 0);
+}
+
+// Status item klinik: habis, hampir habis (baki < penggunaan bulan dipilih) atau mencukupi
+function klinikItemStatus(baki, keluar) {
+  if (baki <= 0) return 'habis';
+  if (keluar > 0 && baki < keluar) return 'hampir';
+  return 'ok';
+}
+
+function renderAdminKlinik() {
+  const body = document.getElementById('admin-klinik-summary-body');
+  if (!body || !isAdminLoggedIn) return;
+  const month = adminKlinikMonth || currentMonthKey();
+  const monthInput = document.getElementById('admin-klinik-month');
+  if (monthInput && monthInput.value !== month) monthInput.value = month;
+
+  const units = adminKlinikUnits();
+  if (units.length === 0) {
+    body.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-slate-400">Tiada stor klinik lagi. Tandakan pengguna sebagai <b>Penjaga Stor Klinik</b> di Pengurusan Pengguna.</td></tr>';
+    renderAdminKlinikDetail(month);
+    return;
+  }
+
+  body.innerHTML = units.map(unit => {
+    const doc = klinikDocFor(unit);
+    const s = klinikMonthStats(unit, month);
+    const list = klinikItemList(doc);
+    const habis = list.filter(i => klinikItemStatus(i.baki, s.keluar[i.id] || 0) === 'habis').length;
+    const hampir = list.filter(i => klinikItemStatus(i.baki, s.keluar[i.id] || 0) === 'hampir').length;
+    const penjaga = appUsers.filter(u => u.penjagaStor && u.unit === unit).map(u => escapeHtml(u.nama || u.email)).join(', ');
+    const bakiAwal = !doc ? '<span class="text-rose-600 font-bold">Belum diisi</span>'
+      : doc.bakiAwalDikunci ? '<span class="text-emerald-700 font-bold"><i class="fa-solid fa-lock mr-0.5"></i>Dikunci</span>'
+      : '<span class="text-amber-700 font-bold"><i class="fa-solid fa-lock-open mr-0.5"></i>Dibuka</span>';
+    const active = adminKlinikSelected === unit;
+    return `
+      <tr data-unit="${escapeHtml(unit)}" onclick="selectAdminKlinik(this.dataset.unit)" class="cursor-pointer transition ${active ? 'bg-purple-50' : 'hover:bg-slate-50'}">
+        <td class="p-3 font-extrabold text-purple-800"><i class="fa-solid fa-chevron-${active ? 'down' : 'right'} text-[10px] mr-1"></i>${escapeHtml(unit)}</td>
+        <td class="p-3">${penjaga || '<span class="text-rose-600 font-bold">Tiada</span>'}</td>
+        <td class="p-3 text-center">${bakiAwal}</td>
+        <td class="p-3 text-center font-bold">${list.filter(i => i.baki > 0).length}</td>
+        <td class="p-3 text-center">${sumValues(s.lulus)}</td>
+        <td class="p-3 text-center text-emerald-700 font-bold">${sumValues(s.terima)}</td>
+        <td class="p-3 text-center text-purple-700 font-bold">${sumValues(s.keluar)}</td>
+        <td class="p-3 text-center">${s.menunggu ? `<span class="bg-amber-100 text-amber-800 font-black px-2 py-0.5 rounded-full">${s.menunggu}</span>` : '0'}</td>
+        <td class="p-3 text-center">${habis ? `<span class="bg-rose-100 text-rose-700 font-black px-2 py-0.5 rounded-full mr-1">${habis} habis</span>` : ''}${hampir ? `<span class="bg-amber-100 text-amber-800 font-black px-2 py-0.5 rounded-full">${hampir} hampir</span>` : ''}${!habis && !hampir ? '<span class="text-slate-400">-</span>' : ''}</td>
+      </tr>`;
+  }).join('');
+
+  renderAdminKlinikDetail(month);
+}
+
+function renderAdminKlinikDetail(month) {
+  const box = document.getElementById('admin-klinik-detail');
+  if (!box) return;
+  const unit = adminKlinikSelected;
+  if (!unit || !adminKlinikUnits().includes(unit)) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  const doc = klinikDocFor(unit);
+  const s = klinikMonthStats(unit, month);
+  const keys = new Set([...Object.keys(doc ? doc.items : {}), ...Object.keys(s.lulus), ...Object.keys(s.terima), ...Object.keys(s.keluar)]);
+  const statusOrder = { habis: 0, hampir: 1, ok: 2 };
+  const rows = [...keys].map(k => {
+    const it = (doc && doc.items[k]) || null;
+    const inv = items.find(i => String(i.id) === k || i.sku === k);
+    const baki = it ? it.baki : 0;
+    const keluar = s.keluar[k] || 0;
+    return {
+      sku: (it && it.sku) || (inv && inv.sku) || k,
+      nama: (it && it.nama) || (inv && inv.nama) || k,
+      unitBungkus: (it && it.unitBungkus) || (inv && inv.unit) || '',
+      baki, lulus: s.lulus[k] || 0, terima: s.terima[k] || 0, keluar,
+      status: klinikItemStatus(baki, keluar)
+    };
+  }).sort((a, b) => statusOrder[a.status] - statusOrder[b.status] || a.nama.localeCompare(b.nama));
+
+  const statusHtml = {
+    habis: '<span class="bg-rose-100 text-rose-700 font-black px-2 py-0.5 rounded-full text-[10px]">Habis</span>',
+    hampir: '<span class="bg-amber-100 text-amber-800 font-black px-2 py-0.5 rounded-full text-[10px]">Hampir habis</span>',
+    ok: '<span class="bg-emerald-100 text-emerald-700 font-black px-2 py-0.5 rounded-full text-[10px]">Mencukupi</span>'
+  };
+  const logs = klinikLogs.filter(l => l.unit === unit && l.bulan === month);
+  const canUnlock = currentUserRole === 'superadmin' && doc && doc.bakiAwalDikunci;
+
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+      <div>
+        <h3 class="text-lg font-extrabold text-slate-800">${escapeHtml(unit)}</h3>
+        <p class="text-xs text-slate-500">Butiran item bagi bulan ${escapeHtml(formatDate(month + '-01').slice(3))}${doc && doc.bakiAwalPada ? ` · Baki awal diisi ${escapeHtml(formatDateTime(doc.bakiAwalPada))}` : ''}</p>
+      </div>
+      <div class="flex gap-2">
+        ${canUnlock ? `<button type="button" data-unit="${escapeHtml(unit)}" onclick="unlockKlinikBakiAwal(this.dataset.unit)" class="bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs px-3 py-2 rounded-xl"><i class="fa-solid fa-lock-open mr-1"></i>Buka Kunci Baki Awal</button>` : ''}
+        <button type="button" onclick="selectAdminKlinik('')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-3 py-2 rounded-xl">Tutup</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto border border-slate-200 rounded-xl">
+      <table class="w-full text-left border-collapse text-xs">
+        <thead>
+          <tr class="bg-slate-100 text-slate-700 font-bold uppercase">
+            <th class="p-2.5">Kod</th>
+            <th class="p-2.5">Nama Item</th>
+            <th class="p-2.5 text-center">Baki Klinik</th>
+            <th class="p-2.5 text-center">Diluluskan</th>
+            <th class="p-2.5 text-center">Diterima</th>
+            <th class="p-2.5 text-center">Keluar</th>
+            <th class="p-2.5 text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          ${rows.length ? rows.map(r => `
+            <tr>
+              <td class="p-2.5 font-semibold text-slate-500 whitespace-nowrap">${escapeHtml(r.sku)}</td>
+              <td class="p-2.5 font-bold text-slate-800">${escapeHtml(r.nama)}</td>
+              <td class="p-2.5 text-center font-extrabold">${r.baki} <span class="font-medium text-slate-400">${escapeHtml(r.unitBungkus)}</span></td>
+              <td class="p-2.5 text-center">${r.lulus || '-'}</td>
+              <td class="p-2.5 text-center text-emerald-700 font-bold">${r.terima || '-'}</td>
+              <td class="p-2.5 text-center text-purple-700 font-bold">${r.keluar || '-'}</td>
+              <td class="p-2.5 text-center">${statusHtml[r.status]}</td>
+            </tr>`).join('') : '<tr><td colspan="7" class="p-4 text-center text-slate-400">Tiada item dalam stor klinik ini.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h4 class="text-sm font-extrabold text-slate-800 mb-2">Rekod Pergerakan (${logs.length})</h4>
+      <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
+        ${logs.length ? logs.map(klinikLogRowHtml).join('') : '<p class="text-xs text-slate-400">Tiada rekod bagi bulan ini.</p>'}
+      </div>
+    </div>`;
+}
+
+function unlockKlinikBakiAwal(unit) {
+  if (currentUserRole !== 'superadmin') return;
+  showConfirmModal('Buka Kunci Baki Awal', `Buka semula baki awal ${unit}? Penjaga stor klinik boleh membetulkan baki semua item, kemudian menguncinya semula.`, async () => {
+    const token = showLoadingOverlay('Membuka kunci baki awal...');
+    try {
+      await klinikRef(unit).update({ bakiAwalDikunci: false, bakiAwalDibukaPada: new Date().toISOString(), bakiAwalDibukaOleh: currentUserEmail });
+      addAuditLog('Buka Kunci Baki Awal Klinik', `Baki awal stor ${unit} dibuka semula untuk pembetulan.`);
+      showToast(`Baki awal ${unit} dibuka. Penjaga stor boleh membetulkannya.`, 'success');
+    } catch (err) {
+      showToast('Gagal membuka kunci: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
+
+// ------------------------------------------
 // 18. PERMULAAN SISTEM
 // ------------------------------------------
 function renderAll() {
@@ -5104,6 +5887,8 @@ function renderAll() {
   renderApproversTable();
   renderMasterPembekalTable();
   renderKewPs14Table();
+  renderKlinikView();
+  renderAdminKlinik();
   updateAdminTaskBadges();
 }
 
