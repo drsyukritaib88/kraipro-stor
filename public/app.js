@@ -89,6 +89,12 @@ function todayISODate() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
 }
 
+// Tarikh (YYYY-MM-DD, waktu Malaysia) bagi cap masa ISO
+function todayISODateOf(iso) {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? String(iso || '').slice(0, 10) : d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+}
+
 // Paparan tarikh: dd-mm-yyyy (data disimpan sebagai YYYY-MM-DD)
 function formatDate(val) {
   const s = String(val || '');
@@ -235,7 +241,7 @@ function startFirestoreListeners() {
       return;
     }
     const data = snap.data();
-    if (Array.isArray(data.items)) items = data.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, id: String(i.id), baki: toInt(i.baki), reorder: toInt(i.reorder), harga: parseFloat(i.harga) || 0 }));
+    if (Array.isArray(data.items)) items = data.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, id: String(i.id), baki: toInt(i.baki), reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks), harga: parseFloat(i.harga) || 0 }));
     if (Array.isArray(data.pembekalList)) pembekalList = data.pembekalList;
     // LPO format lama (dalam dokumen stok): papar sementara & pindahkan ke koleksi kraipro_lpo
     legacyStateLpo = Array.isArray(data.lpoList) ? data.lpoList.filter(l => l && typeof l === 'object') : [];
@@ -944,7 +950,7 @@ function exportItemsToCSV() {
     return;
   }
 
-  const headers = ["SKU", "Nama Item", "Kategori", "SubKategori", "Packaging Unit", "Harga Seunit (RM)", "Baki Stok", "Reorder Level"];
+  const headers = ["SKU", "Nama Item", "Kategori", "SubKategori", "Packaging Unit", "Harga Seunit (RM)", "Baki Stok", "Reorder Level", "Paras Minimum", "Paras Maksimum"];
   const csvRows = [headers.join(",")];
 
   items.forEach(i => {
@@ -956,7 +962,9 @@ function exportItemsToCSV() {
       `"${(i.unit || 'Box').replace(/"/g, '""')}"`,
       parseFloat(i.harga || 0).toFixed(2),
       parseInt(i.baki || 0),
-      parseInt(i.reorder || 5)
+      parseInt(i.reorder || 5),
+      toInt(i.paraMin),
+      toInt(i.paraMaks)
     ];
     csvRows.push(row.join(","));
   });
@@ -1001,9 +1009,13 @@ function importItemsFromCSV(event) {
 
         if (sku && nama) {
           const existingIdx = items.findIndex(it => (it.sku || '').toLowerCase() === sku.toLowerCase());
+          const existing = existingIdx !== -1 ? items[existingIdx] : {};
+          // Fail CSV lama tiada lajur Min/Maks: kekalkan nilai sedia ada
+          const paraMin = cols.length > 8 ? toInt(cols[8]) : toInt(existing.paraMin);
+          const paraMaks = cols.length > 9 ? toInt(cols[9]) : toInt(existing.paraMaks);
           const newItem = {
-            id: existingIdx !== -1 ? items[existingIdx].id : String(Date.now() + i),
-            sku, nama, kategori: kat, subkategori: subkat, unit, harga, baki, reorder
+            id: existingIdx !== -1 ? existing.id : String(Date.now() + i),
+            sku, nama, kategori: kat, subkategori: subkat, unit, harga, baki, reorder, paraMin, paraMaks
           };
 
           if (existingIdx !== -1) {
@@ -2668,7 +2680,7 @@ function renderReorderTable() {
   if (allLow.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="7" class="p-6 text-center text-emerald-700 font-bold bg-emerald-50">
+        <td colspan="9" class="p-6 text-center text-emerald-700 font-bold bg-emerald-50">
           <i class="fa-solid fa-circle-check text-emerald-600 text-lg mr-2"></i> Semua item mencukupi! Tiada item di bawah paras reorder.
         </td>
       </tr>`;
@@ -2695,7 +2707,7 @@ function renderReorderTable() {
       const n = lowStockItems.filter(x => itemCategoryName(x) === cat).length;
       const header = document.createElement('tr');
       header.innerHTML = `
-        <td colspan="7" class="px-3 py-2.5 bg-rose-900 text-white text-xs font-black uppercase tracking-wide">
+        <td colspan="9" class="px-3 py-2.5 bg-rose-900 text-white text-xs font-black uppercase tracking-wide">
           <i class="fa-solid fa-layer-group mr-1.5 text-amber-300"></i>${escapeHtml(cat)}
           <span class="ml-2 bg-white/15 px-2 py-0.5 rounded-md text-[10px]">${n} item</span>
         </td>`;
@@ -2708,15 +2720,19 @@ function renderReorderTable() {
       const n = lowStockItems.filter(x => itemCategoryName(x) === cat && itemSubcategoryName(x) === sub).length;
       const header = document.createElement('tr');
       header.innerHTML = `
-        <td colspan="7" class="px-3 py-1.5 bg-rose-100 border-y border-rose-200 text-[11px] font-extrabold text-rose-900">
+        <td colspan="9" class="px-3 py-1.5 bg-rose-100 border-y border-rose-200 text-[11px] font-extrabold text-rose-900">
           <i class="fa-solid fa-folder-open mr-1.5"></i>${escapeHtml(sub)} <span class="ml-1 font-bold text-rose-700">${n} item</span>
         </td>`;
       tbody.appendChild(header);
       lastSub = sub;
     }
 
-    const shortage = Math.max(0, toInt(i.reorder) - toInt(i.baki));
+    // Cadangan pesanan: sehingga paras maksimum (atau paras menokok jika maksimum belum ditetapkan)
+    const target = toInt(i.paraMaks) || toInt(i.reorder);
+    const shortage = Math.max(0, target - toInt(i.baki));
+    const belowMin = toInt(i.paraMin) > 0 && toInt(i.baki) <= toInt(i.paraMin);
     const unitText = escapeHtml(i.unit || 'unit');
+    const level = (v) => toInt(v) > 0 ? `${toInt(v)} ${unitText}` : '<span class="text-rose-300">-</span>';
     const tr = document.createElement('tr');
     tr.className = 'bg-rose-50 hover:bg-rose-100/90 transition border-b border-rose-200 text-rose-950 font-medium';
     tr.innerHTML = `
@@ -2724,9 +2740,13 @@ function renderReorderTable() {
       <td class="p-3.5 font-extrabold text-rose-950">${escapeHtml(i.nama)}</td>
       <td class="p-3.5"><span class="bg-rose-200/80 text-rose-900 px-2 py-0.5 rounded-md text-[11px] font-bold">${escapeHtml(i.kategori)}</span></td>
       <td class="p-3.5 text-center font-black"><span class="bg-rose-600 text-white px-2.5 py-1 rounded-lg font-black text-xs shadow whitespace-nowrap">${toInt(i.baki)} ${unitText}</span></td>
+      <td class="p-3.5 text-center font-bold text-rose-800 whitespace-nowrap">${level(i.paraMin)}</td>
       <td class="p-3.5 text-center font-bold text-rose-800 whitespace-nowrap">${toInt(i.reorder)} ${unitText}</td>
+      <td class="p-3.5 text-center font-bold text-rose-800 whitespace-nowrap">${level(i.paraMaks)}</td>
       <td class="p-3.5 text-center font-black text-rose-700"><span class="bg-rose-200 text-rose-900 px-2 py-0.5 rounded-md text-xs font-black whitespace-nowrap">+${shortage} ${unitText}</span></td>
-      <td class="p-3.5 text-center"><span class="px-2.5 py-1 bg-rose-600 text-white rounded-lg text-[10px] font-black uppercase shadow animate-pulse whitespace-nowrap"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Perlu Reorder</span></td>
+      <td class="p-3.5 text-center">${belowMin
+        ? '<span class="px-2.5 py-1 bg-rose-900 text-white rounded-lg text-[10px] font-black uppercase shadow animate-pulse whitespace-nowrap"><i class="fa-solid fa-circle-exclamation mr-1"></i> Bawah Minimum</span>'
+        : '<span class="px-2.5 py-1 bg-rose-600 text-white rounded-lg text-[10px] font-black uppercase shadow whitespace-nowrap"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Perlu Reorder</span>'}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -3581,6 +3601,8 @@ function openItemModal(itemId = null) {
 
     if (document.getElementById('modal-item-harga')) document.getElementById('modal-item-harga').value = item.harga;
     if (document.getElementById('modal-item-reorder')) document.getElementById('modal-item-reorder').value = item.reorder;
+    if (document.getElementById('modal-item-min')) document.getElementById('modal-item-min').value = toInt(item.paraMin);
+    if (document.getElementById('modal-item-max')) document.getElementById('modal-item-max').value = toInt(item.paraMaks);
     if (document.getElementById('modal-item-baki')) document.getElementById('modal-item-baki').value = item.baki;
   } else {
     if (title) title.innerText = 'Tambah Item Stok Baru';
@@ -3594,9 +3616,12 @@ function openItemModal(itemId = null) {
 
     if (document.getElementById('modal-item-harga')) document.getElementById('modal-item-harga').value = '0.00';
     if (document.getElementById('modal-item-reorder')) document.getElementById('modal-item-reorder').value = '5';
+    if (document.getElementById('modal-item-min')) document.getElementById('modal-item-min').value = '0';
+    if (document.getElementById('modal-item-max')) document.getElementById('modal-item-max').value = '0';
     if (document.getElementById('modal-item-baki')) document.getElementById('modal-item-baki').value = '0';
   }
 
+  updateItemUsageNote(itemId ? items.find(i => String(i.id) === String(itemId)) : null);
   modal.classList.remove('hidden');
 }
 
@@ -3725,16 +3750,26 @@ async function saveItem() {
   const unit = document.getElementById('modal-item-unit')?.value || 'Box';
   const harga = parseFloat(document.getElementById('modal-item-harga')?.value) || 0;
   const reorder = parseInt(document.getElementById('modal-item-reorder')?.value) || 5;
+  const paraMin = Math.max(0, toInt(document.getElementById('modal-item-min')?.value));
+  const paraMaks = Math.max(0, toInt(document.getElementById('modal-item-max')?.value));
   const baki = parseInt(document.getElementById('modal-item-baki')?.value) || 0;
 
   if (!sku || !nama) {
     showToast('Sila isi SKU dan Nama Item!', 'error');
     return;
   }
+  if (paraMin > reorder) {
+    showToast('Paras Minimum tidak boleh melebihi paras Menokok (Reorder).', 'error');
+    return;
+  }
+  if (paraMaks && paraMaks < reorder) {
+    showToast('Paras Maksimum tidak boleh kurang daripada paras Menokok (Reorder).', 'error');
+    return;
+  }
 
   const itemData = {
     id: id || String(Date.now()),
-    sku, nama, kategori: kat, subkategori: subkat, unit, harga, reorder, baki
+    sku, nama, kategori: kat, subkategori: subkat, unit, harga, reorder, paraMin, paraMaks, baki
   };
 
   if (id) {
@@ -3750,6 +3785,121 @@ async function saveItem() {
   closeItemModal();
   renderAll();
   if (ok) showToast('Item berjaya disimpan!', 'success');
+}
+
+// ---- Paras stok automatik: Minimum = 1 bulan, Menokok = 2 bulan, Maksimum = 3 bulan purata penggunaan ----
+// Penggunaan = kuantiti diluluskan dalam permohonan (stok keluar dari stor daerah).
+// Tempoh: 12 bulan terakhir, atau sejak kelulusan pertama jika rekod kurang daripada 12 bulan.
+const STOCK_LEVEL_MONTHS = { min: 1, reorder: 2, maks: 3 };
+
+function usageWindow() {
+  const today = todayISODate();
+  const d = new Date(today + 'T00:00:00Z');
+  d.setUTCMonth(d.getUTCMonth() - 12);
+  let start = d.toISOString().slice(0, 10);
+  const first = requests.filter(r => r.status === 'Selesai' && r.tarikhLulus).map(r => String(r.tarikhLulus)).sort()[0];
+  if (first && first > start) start = first;
+  const days = (Date.parse(today) - Date.parse(start)) / 86400000 + 1;
+  return { start, months: Math.min(12, Math.max(1, days / 30.44)) };
+}
+
+function usageTotalsSince(start) {
+  const totals = {};
+  requests.forEach(r => {
+    if (r.status !== 'Selesai' || !(String(r.tarikhLulus || '') >= start)) return;
+    (r.items || []).forEach(i => {
+      if (i.status !== 'Lulus' || toInt(i.qtyLulus) <= 0) return;
+      const inv = findInventoryItem(i);
+      if (inv) totals[String(inv.id)] = (totals[String(inv.id)] || 0) + toInt(i.qtyLulus);
+    });
+  });
+  return totals;
+}
+
+function suggestedStockLevels(avgPerMonth) {
+  return {
+    min: Math.ceil(avgPerMonth * STOCK_LEVEL_MONTHS.min),
+    reorder: Math.ceil(avgPerMonth * STOCK_LEVEL_MONTHS.reorder),
+    maks: Math.ceil(avgPerMonth * STOCK_LEVEL_MONTHS.maks)
+  };
+}
+
+function itemMonthlyUsage(item) {
+  const win = usageWindow();
+  const total = item ? (usageTotalsSince(win.start)[String(item.id)] || 0) : 0;
+  return { win, total, avg: total / win.months };
+}
+
+function updateItemUsageNote(item) {
+  const el = document.getElementById('modal-item-usage-note');
+  if (!el) return;
+  if (!item) {
+    el.textContent = 'Item baharu: isi paras secara manual. Paras boleh dikira automatik selepas ada rekod penggunaan.';
+    return;
+  }
+  const { win, total, avg } = itemMonthlyUsage(item);
+  el.textContent = total > 0
+    ? `Purata penggunaan: ${avg.toFixed(1)} ${item.unit || 'unit'} sebulan (${total} dikeluarkan dalam ${win.months.toFixed(1)} bulan sejak ${formatDate(win.start)}).`
+    : `Tiada rekod penggunaan sejak ${formatDate(win.start)}. Isi paras secara manual.`;
+}
+
+function fillItemLevelsFromUsage() {
+  const id = document.getElementById('modal-item-id')?.value;
+  const item = id ? items.find(i => String(i.id) === String(id)) : null;
+  const { avg } = itemMonthlyUsage(item);
+  if (!item || avg <= 0) {
+    showToast('Tiada rekod penggunaan untuk item ini. Sila isi paras secara manual.', 'info');
+    return;
+  }
+  const s = suggestedStockLevels(avg);
+  document.getElementById('modal-item-min').value = s.min;
+  document.getElementById('modal-item-reorder').value = s.reorder;
+  document.getElementById('modal-item-max').value = s.maks;
+  showToast(`Paras dikira: Min ${s.min}, Menokok ${s.reorder}, Maks ${s.maks}. Tekan Simpan untuk menyimpan.`, 'success');
+}
+
+// Kira semula paras stok bagi item dalam paparan Stok Induk semasa (ikut kategori / carian)
+function openAutoStockLevels() {
+  if (!isAdminLoggedIn) return;
+  const list = getMasterFilteredItems();
+  const win = usageWindow();
+  const totals = usageTotalsSince(win.start);
+  const changes = list.map(i => {
+    const total = totals[String(i.id)] || 0;
+    if (total <= 0) return null;
+    const s = suggestedStockLevels(total / win.months);
+    if (s.min === toInt(i.paraMin) && s.reorder === toInt(i.reorder) && s.maks === toInt(i.paraMaks)) return null;
+    return { id: String(i.id), ...s };
+  }).filter(Boolean);
+  const noUsage = list.filter(i => !(totals[String(i.id)] > 0)).length;
+  const scope = [masterCatTab || 'Semua Kategori', (document.getElementById('master-search')?.value || '').trim()].filter(Boolean).join(' · ');
+
+  if (changes.length === 0) {
+    showToast(`Tiada perubahan: paras stok sudah sepadan dengan penggunaan, atau tiada rekod penggunaan (${scope}).`, 'info');
+    return;
+  }
+
+  showConfirmModal('Kira Paras Stok Automatik',
+    `Berdasarkan purata penggunaan ${win.months.toFixed(1)} bulan (${formatDate(win.start)} hingga hari ini):\n` +
+    `• Minimum = 1 bulan penggunaan\n• Menokok (Reorder) = 2 bulan penggunaan\n• Maksimum = 3 bulan penggunaan\n\n` +
+    `Paparan: ${scope}\n${changes.length} item akan dikemas kini. ${noUsage} item tiada rekod penggunaan dan tidak diubah.`,
+    async () => {
+      const token = showLoadingOverlay('Mengemas kini paras stok...');
+      try {
+        await runStockTransaction(async (tx, fresh) => {
+          changes.forEach(c => {
+            const it = fresh.items.find(x => String(x.id) === c.id);
+            if (it) { it.paraMin = c.min; it.reorder = c.reorder; it.paraMaks = c.maks; }
+          });
+        });
+        addAuditLog('Kira Paras Stok', `${changes.length} item (${scope}): paras Min/Menokok/Maks dikira semula daripada purata penggunaan ${win.months.toFixed(1)} bulan.`);
+        showToast(`Paras stok ${changes.length} item dikemas kini.`, 'success');
+      } catch (err) {
+        showToast('Gagal mengemas kini paras stok: ' + authErrorMessage(err), 'error');
+      } finally {
+        hideLoadingOverlay(token);
+      }
+    });
 }
 
 function deleteItem(id) {
@@ -4803,6 +4953,17 @@ function previewKewPs8(reqId) {
   const pelulusJawatan = processed ? (req.pelulusJawatan || (pelulusUser && pelulusUser.jawatan) || (pelulusIsSuper ? 'Pentadbir Sistem' : '')) : '';
   const pelulusTarikh = processed ? fmtDate(req.tarikhLulus || '') : '';
 
+  // Perakuan Penerimaan: diisi apabila penjaga stor klinik telah mengesahkan terima
+  const received = req.terimaKlinik === 'Diterima';
+  const terimaQty = received && Array.isArray(req.terimaKlinikQty) ? req.terimaKlinikQty : [];
+  const penerimaEmail = String(req.terimaKlinikOleh || '').toLowerCase();
+  const penerimaUser = penerimaEmail
+    ? (appUsers.find(u => u.id === penerimaEmail) || (penerimaEmail === currentUserEmail ? currentUserProfile : null))
+    : null;
+  const penerimaNama = received ? (req.terimaKlinikNama || (penerimaUser && penerimaUser.nama) || req.terimaKlinikOleh || '') : '';
+  const penerimaJawatan = received && penerimaUser ? [penerimaUser.jawatan, penerimaUser.gred].filter(Boolean).join(' ') : '';
+  const penerimaTarikh = received && req.terimaKlinikPada ? fmtDate(todayISODateOf(req.terimaKlinikPada)) : '';
+
   // Gaya: garis biasa & garis tebal pemisah bahagian; fon pengisian kecil
   const b = 'border border-black';
   const thick = 'border-r-[3px] border-r-black';
@@ -4839,6 +5000,13 @@ function previewKewPs8(reqId) {
         i.status === 'Ditolak' ? 'Tidak diluluskan' :
         i.status === 'Dibatalkan' ? 'Dibatalkan' :
         toInt(i.qtyLulus) < toInt(i.qtyMohon) ? 'Lulus sebahagian' : '';
+      // Kuantiti diterima ikut indeks asal item dalam permohonan
+      const itemIdx = formIdx * KEWPS8_ROWS_PER_FORM + r;
+      const approvedQty = i.status === 'Lulus' ? toInt(i.qtyLulus) : 0;
+      const diterima = received && approvedQty > 0 ? toInt(terimaQty[itemIdx]) : '';
+      const catatanTerima = diterima === '' ? '' :
+        diterima === 0 ? 'Tidak diterima' :
+        diterima < approvedQty ? `Kurang ${approvedQty - diterima}` : '';
       rows.push(`
         <tr style="${rowStyle}">
           <td class="${td} text-center text-[9pt] [overflow-wrap:anywhere]">${escapeHtml(i.sku)}</td>
@@ -4848,8 +5016,8 @@ function previewKewPs8(reqId) {
           <td class="${td} text-center">${processed ? baki : ''}</td>
           <td class="${td} text-center">${lulus}</td>
           <td class="${td} ${thick}">${escapeHtml(catatanPelulus)}</td>
-          <td class="${td}"></td>
-          <td class="${td}"></td>
+          <td class="${td} text-center">${diterima}</td>
+          <td class="${td}">${escapeHtml(catatanTerima)}</td>
         </tr>`);
     }
 
@@ -4895,7 +5063,7 @@ function previewKewPs8(reqId) {
           <tr class="align-top">
             <td colspan="4" class="${b} ${thick} px-3 py-2.5">${signBlock('Pemohon:', req.nama || '', pemohonJawatan, fmtDate(req.tarikh))}</td>
             <td colspan="3" class="${b} ${thick} px-3 py-2.5">${signBlock('Pegawai Pelulus:', pelulusNama, pelulusJawatan, pelulusTarikh)}</td>
-            <td colspan="2" class="${b} px-3 py-2.5">${signBlock('Pemohon/ Wakil:', '', '', '')}</td>
+            <td colspan="2" class="${b} px-3 py-2.5">${signBlock('Pemohon/ Wakil:', penerimaNama, penerimaJawatan, penerimaTarikh)}</td>
           </tr>
         </table>
         <div class="border-t border-slate-500 mt-5"></div>
@@ -5239,6 +5407,7 @@ function klinikLogEntry(jenis, unit, logItems, extra = {}) {
 function renderKlinikAll() {
   renderKlinikView();
   renderAdminKlinik();
+  renderDaftarPanels();
 }
 
 function startKlinikListeners() {
@@ -5859,12 +6028,14 @@ function renderAdminKlinikDetail(month) {
         </tbody>
       </table>
     </div>
+    <div id="ds-admin-panel" class="border-t border-slate-100 pt-4"></div>
     <div>
       <h4 class="text-sm font-extrabold text-slate-800 mb-2">Rekod Pergerakan (${logs.length})</h4>
       <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
         ${logs.length ? logs.map(klinikLogRowHtml).join('') : '<p class="text-xs text-slate-400">Tiada rekod bagi bulan ini.</p>'}
       </div>
     </div>`;
+  renderDaftarPanel('ds-admin');
 }
 
 function unlockKlinikBakiAwal(unit) {
@@ -5881,6 +6052,424 @@ function unlockKlinikBakiAwal(unit) {
       hideLoadingOverlay(token);
     }
   });
+}
+
+
+// ------------------------------------------
+// 17c. DAFTAR STOK (KEW.PS-3) & SENARAI DAFTAR STOK (KEW.PS-4)
+//   Panel: 'ds-daerah' (stor daerah, Laporan), 'ds-klinik' (penjaga, klinik sendiri), 'ds-admin' (pentadbir, klinik dipilih)
+//   Stor daerah: pergerakan = LPO diterima (masuk) & permohonan diluluskan (keluar);
+//                baki awal tahun dikira ke belakang daripada baki semasa.
+//   Stor klinik: pergerakan = log kraipro_klinik_log (baki selepas setiap transaksi direkod).
+// ------------------------------------------
+const DS_PANELS = ['ds-daerah', 'ds-klinik', 'ds-admin'];
+const DS_DISTRICT_STORE = 'Stor Daerah, PKPD Kuala Krai';
+const dsSelection = {}; // prefix -> { year, cat, item }
+
+function dsUnit(prefix) {
+  if (prefix === 'ds-klinik') return myKlinikUnit();
+  if (prefix === 'ds-admin') return adminKlinikSelected;
+  return '';
+}
+
+function dsStoreName(prefix) {
+  return prefix === 'ds-daerah' ? DS_DISTRICT_STORE : `Stor Klinik, ${dsUnit(prefix)}`;
+}
+
+function dsPriceOf(id, sku) {
+  const inv = items.find(i => String(i.id) === String(id)) || items.find(i => i.sku === sku);
+  return inv ? (parseFloat(inv.harga) || 0) : 0;
+}
+
+// Senarai item bagi panel, disusun ikut kategori & kod; No. Kad = nombor turutan dalam senarai ini
+function dsItemList(prefix) {
+  let list;
+  if (prefix === 'ds-daerah') {
+    list = items.map(i => ({ id: String(i.id), sku: i.sku, nama: i.nama, unit: i.unit || '', kategori: i.kategori, subkategori: i.subkategori, baki: toInt(i.baki), harga: parseFloat(i.harga) || 0, reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks) }));
+  } else {
+    const doc = klinikDocFor(dsUnit(prefix));
+    list = klinikItemList(doc).map(it => {
+      const inv = items.find(i => String(i.id) === String(it.id));
+      return {
+        id: String(it.id), sku: it.sku || (inv && inv.sku) || '', nama: it.nama || (inv && inv.nama) || '', unit: it.unitBungkus || (inv && inv.unit) || '',
+        kategori: it.kategori || (inv && inv.kategori) || '', subkategori: inv ? inv.subkategori : '', baki: toInt(it.baki), harga: dsPriceOf(it.id, it.sku), reorder: null, paraMin: null, paraMaks: null
+      };
+    });
+  }
+  const catOrder = sortedCategoryNames(list);
+  return list
+    .sort((a, b) => catOrder.indexOf(itemCategoryName(a)) - catOrder.indexOf(itemCategoryName(b))
+      || String(a.sku).localeCompare(String(b.sku), undefined, { numeric: true, sensitivity: 'base' }))
+    .map((it, idx) => ({ ...it, noKad: String(idx + 1).padStart(3, '0') }));
+}
+
+function renderDaftarPanels() {
+  DS_PANELS.forEach(renderDaftarPanel);
+}
+
+function renderDaftarPanel(prefix) {
+  const box = document.getElementById(prefix + '-panel');
+  if (!box) return;
+  const visible = prefix === 'ds-daerah' ? isAdminLoggedIn
+    : prefix === 'ds-klinik' ? isKlinikPenjaga() && !!(klinikDocFor(myKlinikUnit()) || {}).bakiAwalDikunci
+    : isAdminLoggedIn && !!adminKlinikSelected;
+  box.classList.toggle('hidden', !visible);
+  if (!visible) return;
+  if (box.contains(document.activeElement)) return; // jangan ganggu semasa memilih
+
+  const list = dsItemList(prefix);
+  const thisYear = parseInt(todayISODate().slice(0, 4));
+  const sel = dsSelection[prefix] || (dsSelection[prefix] = { year: String(thisYear), cat: '', item: '' });
+  const cats = sortedCategoryNames(list);
+  if (sel.cat && !cats.includes(sel.cat)) sel.cat = '';
+  const catItems = list.filter(i => !sel.cat || itemCategoryName(i) === sel.cat);
+  if (sel.item && !catItems.some(i => i.id === sel.item)) sel.item = '';
+
+  const opt = (v, label, cur) => `<option value="${escapeHtml(v)}"${v === cur ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+  const years = [thisYear, thisYear - 1, thisYear - 2].map(String);
+  const field = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-semibold focus:ring-2 focus:ring-purple-500';
+  const compact = prefix === 'ds-klinik';
+
+  box.innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <h3 class="${compact ? 'text-base' : 'text-lg'} font-extrabold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-book text-purple-600"></i> Daftar Stok (KEW.PS-3) &amp; Senarai Daftar Stok (KEW.PS-4)
+        </h3>
+        <p class="text-xs text-slate-500">${escapeHtml(dsStoreName(prefix))} · Dijana daripada rekod ${prefix === 'ds-daerah' ? 'LPO yang diterima dan permohonan yang diluluskan' : 'penerimaan dan stok keluar klinik'}.</p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <label class="text-[11px] font-bold text-slate-600">Tahun
+          <select onchange="setDaftarSelection('${prefix}', 'year', this.value)" class="${field} mt-0.5">${years.map(y => opt(y, y, sel.year)).join('')}</select>
+        </label>
+        <label class="text-[11px] font-bold text-slate-600">Kategori
+          <select onchange="setDaftarSelection('${prefix}', 'cat', this.value)" class="${field} mt-0.5">${opt('', `Semua Kategori (${list.length})`, sel.cat)}${cats.map(c => opt(c, `${c} (${list.filter(i => itemCategoryName(i) === c).length})`, sel.cat)).join('')}</select>
+        </label>
+        <label class="text-[11px] font-bold text-slate-600">Item (KEW.PS-3)
+          <select onchange="setDaftarSelection('${prefix}', 'item', this.value)" class="${field} mt-0.5">${opt('', `Semua item dipilih (${catItems.length})`, sel.item)}${catItems.map(i => opt(i.id, `${i.noKad} · ${i.sku} · ${i.nama}`, sel.item)).join('')}</select>
+        </label>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" onclick="generateKewPs3('${prefix}')" class="flex-1 sm:flex-initial bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow"><i class="fa-solid fa-file-lines mr-1"></i> Jana KEW.PS-3 (Daftar Stok)</button>
+        <button type="button" onclick="generateKewPs4('${prefix}')" class="flex-1 sm:flex-initial bg-white border-2 border-purple-300 hover:bg-purple-50 text-purple-800 font-extrabold text-xs px-4 py-2 rounded-xl"><i class="fa-solid fa-list-ol mr-1"></i> Jana KEW.PS-4 (Senarai)</button>
+      </div>
+    </div>`;
+}
+
+function setDaftarSelection(prefix, key, value) {
+  const sel = dsSelection[prefix] || (dsSelection[prefix] = { year: todayISODate().slice(0, 4), cat: '', item: '' });
+  sel[key] = value;
+  if (key === 'cat') sel.item = '';
+  document.activeElement && document.activeElement.blur();
+  renderDaftarPanel(prefix);
+}
+
+// ---- Pergerakan stok setiap item ----
+// Stor daerah: semua pergerakan (semua tarikh) bagi satu item
+function dsDistrictMoves(item) {
+  const same = (i) => {
+    const inv = findInventoryItem(i);
+    return inv ? String(inv.id) === item.id : i.sku === item.sku;
+  };
+  const moves = [];
+  lpoList.forEach(lpo => {
+    const tarikh = String(lpo.tarikhTerima || '');
+    if (lpo.status !== 'Selesai' || !/^\d{4}-\d{2}-\d{2}/.test(tarikh)) return;
+    lpoReceivedLines(lpo).forEach(i => {
+      if (!same(i) || toInt(i.qty) <= 0) return;
+      moves.push({
+        tarikh, sortKey: tarikh + (lpo.createdAt || ''), ref: (lpo.btb && lpo.btb.no) || lpo.no, pihak: lpo.pembekal || '',
+        masuk: toInt(i.qty), keluar: 0, pegawai: (lpo.btb && lpo.btb.penerima && lpo.btb.penerima.nama) || ''
+      });
+    });
+  });
+  requests.forEach(r => {
+    const tarikh = String(r.tarikhLulus || r.tarikh || '');
+    if (r.status !== 'Selesai' || !/^\d{4}-\d{2}-\d{2}/.test(tarikh)) return;
+    (r.items || []).forEach(i => {
+      if (i.status !== 'Lulus' || toInt(i.qtyLulus) <= 0 || !same(i)) return;
+      moves.push({ tarikh, sortKey: tarikh + (r.createdAt || ''), ref: r.id, pihak: r.unit || '', masuk: 0, keluar: toInt(i.qtyLulus), pegawai: r.pelulusNama || '' });
+    });
+  });
+  return moves.sort((a, b) => a.sortKey.localeCompare(b.sortKey) || String(a.ref).localeCompare(String(b.ref)));
+}
+
+function dsDistrictLedger(item, year) {
+  const moves = dsDistrictMoves(item);
+  const start = `${year}-01-01`;
+  const end = `${year}-12-31`;
+  const netSince = moves.filter(m => m.tarikh >= start).reduce((s, m) => s + m.masuk - m.keluar, 0);
+  const opening = Math.max(0, item.baki - netSince);
+  let baki = opening;
+  const rows = moves.filter(m => m.tarikh >= start && m.tarikh <= end).map(m => {
+    baki += m.masuk - m.keluar;
+    return { ...m, baki };
+  });
+  return { opening, rows };
+}
+
+const DS_KLINIK_PIHAK = { terima: 'Stor Daerah (PKPD Kuala Krai)', keluar: 'Kegunaan klinik', baki_awal: 'Baki awal (kiraan stok)', pelarasan: 'Pelarasan' };
+
+function dsKlinikLedger(item, logs) {
+  const lines = [];
+  logs.forEach(l => (l.items || []).forEach(i => {
+    if (String(i.itemId) === item.id) lines.push({ l, i });
+  }));
+  let prev = null;
+  let opening = 0;
+  const rows = lines.map(({ l, i }, idx) => {
+    const qty = toInt(i.qty);
+    const after = toInt(i.bakiSelepas);
+    let masuk = 0, keluar = 0;
+    if (l.jenis === 'terima') masuk = qty;
+    else if (l.jenis === 'keluar' || l.jenis === 'pelarasan') keluar = qty;
+    if (idx === 0) opening = l.jenis === 'baki_awal' ? 0 : Math.max(0, after - masuk + keluar);
+    if (l.jenis === 'baki_awal') {
+      // Baki awal menetapkan baki; bezanya direkod sebagai terimaan / keluaran
+      const delta = after - (prev === null ? opening : prev);
+      if (delta >= 0) masuk = delta; else keluar = -delta;
+    }
+    prev = after;
+    return {
+      tarikh: l.tarikh || String(l.createdAt || '').slice(0, 10), ref: l.ref || '-',
+      pihak: l.jenis === 'pelarasan' && l.catatan ? l.catatan : (DS_KLINIK_PIHAK[l.jenis] || l.jenis),
+      masuk, keluar, baki: after, pegawai: l.userNama || l.userEmail || ''
+    };
+  });
+  return { opening, rows };
+}
+
+async function fetchKlinikYearLogs(unit, year) {
+  const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const qs = await db.collection('kraipro_klinik_log').where('unit', '==', unit).where('bulan', 'in', months).get();
+  return qs.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+}
+
+// Sediakan data (dengan popup loading bagi data yang perlu dimuat)
+async function dsPrepare(prefix) {
+  const sel = dsSelection[prefix] || { year: todayISODate().slice(0, 4), cat: '', item: '' };
+  const year = sel.year;
+  const list = dsItemList(prefix).filter(i => !sel.cat || itemCategoryName(i) === sel.cat);
+  let ledgerOf;
+  if (prefix === 'ds-daerah') {
+    if (year < requestWindowStart().slice(0, 4) && !olderRequestsLoaded) await loadOlderRequests();
+    ledgerOf = (item) => dsDistrictLedger(item, year);
+  } else {
+    const unit = dsUnit(prefix);
+    const token = showLoadingOverlay('Memuatkan rekod stor klinik...');
+    let logs;
+    try {
+      logs = await fetchKlinikYearLogs(unit, year);
+    } finally {
+      hideLoadingOverlay(token);
+    }
+    ledgerOf = (item) => dsKlinikLedger(item, logs);
+  }
+  return { sel, year, list, ledgerOf };
+}
+
+function dsOpenPreview(html) {
+  const content = document.getElementById('kewps8-content');
+  if (!content) return;
+  content.innerHTML = html;
+  document.getElementById('kewps8-modal')?.classList.remove('hidden');
+}
+
+// ---- KEW.PS-3 ----
+async function generateKewPs3(prefix) {
+  let data;
+  try {
+    data = await dsPrepare(prefix);
+  } catch (err) {
+    showToast('Gagal menyediakan Daftar Stok: ' + authErrorMessage(err), 'error');
+    return;
+  }
+  const { sel, year, ledgerOf } = data;
+  const targets = sel.item ? data.list.filter(i => i.id === sel.item) : data.list;
+  if (targets.length === 0) {
+    showToast('Tiada item untuk dijana.', 'error');
+    return;
+  }
+  const storeName = dsStoreName(prefix);
+  const forms = targets.map((item, idx) => kewPs3FormHtml(item, ledgerOf(item), year, storeName, idx === targets.length - 1)).join('');
+  dsOpenPreview(`<div class="print-portrait text-black font-sans">${forms}</div>`);
+}
+
+function kewPs3FormHtml(item, ledger, year, storeName, isLast) {
+  const c = 'border border-black px-1.5 py-1';
+  const h = `${c} bg-slate-200 font-bold text-center`;
+  const blank = (n) => Array.from({ length: n }, () => `<td class="${c}">&nbsp;</td>`).join('');
+  const harga = item.harga;
+  const rm = (v) => formatRM(v);
+
+  // Jumlah suku tahun & tahunan (kuantiti & nilai pada harga seunit semasa)
+  const q = [0, 1, 2, 3].map(() => ({ inQ: 0, outQ: 0 }));
+  ledger.rows.forEach(r => {
+    const qi = Math.floor((parseInt(String(r.tarikh).slice(5, 7)) - 1) / 3);
+    if (q[qi]) { q[qi].inQ += r.masuk; q[qi].outQ += r.keluar; }
+  });
+  const totIn = q.reduce((s, x) => s + x.inQ, 0);
+  const totOut = q.reduce((s, x) => s + x.outQ, 0);
+  const qCells = (key) => q.map(x => `<td class="${c} text-center">${x[key] || ''}</td><td class="${c} text-right">${x[key] ? rm(x[key] * harga) : ''}</td>`).join('');
+
+  const header = (lampiran) => `
+    <div class="flex justify-between text-[10px]"><span>Pekeliling Perbendaharaan Malaysia</span><span>AM 6.3 ${lampiran}</span></div>`;
+
+  const partA = `
+    <div style="break-after: page; page-break-after: always;" class="text-[11px] space-y-3">
+      ${header('Lampiran A')}
+      <div class="text-right font-bold">
+        <p class="text-xs">KEW.PS-3</p>
+        <p>No.Kad: <span class="underline">${escapeHtml(item.noKad)}</span></p>
+      </div>
+      <h2 class="text-center font-bold text-xs">DAFTAR STOK</h2>
+      <table class="text-[11px] font-bold">
+        <tr><td class="pr-3 py-0.5">Nama Stor</td><td class="px-1">:</td><td class="font-semibold">${escapeHtml(storeName)}</td></tr>
+        <tr><td class="pr-3 py-0.5">Perihal Stok</td><td class="px-1">:</td><td class="font-semibold">${escapeHtml(item.nama)}</td></tr>
+      </table>
+      <h3 class="text-center font-bold">BAHAGIAN A</h3>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:20%"><col style="width:14%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:22%"></colgroup>
+        <tr><td class="${h} text-left">No. Kod</td><td colspan="4" class="${c} font-bold">${escapeHtml(item.sku)}</td><td class="${h} text-left">Kumpulan</td><td class="${c}">${escapeHtml(itemCategoryName(item))}</td></tr>
+        <tr><td class="${h} text-left">Unit Pengukuran</td><td colspan="4" class="${c}">${escapeHtml(item.unit)}</td><td class="${h} text-left">Pergerakan</td><td class="${c}">&nbsp;</td></tr>
+        <tr><td rowspan="2" class="${h} text-left">Lokasi Penyimpanan Stok</td><td class="${h}">Gudang/ Seksyen</td><td class="${h}">Baris</td><td class="${h}">Rak</td><td class="${h}">Tingkat</td><td class="${h}">Petak</td><td class="${h}">Kod Lokasi Penuh</td></tr>
+        <tr>${blank(6)}</tr>
+      </table>
+
+      <table class="w-full border-collapse">
+        <tr><td colspan="4" class="${h}">PARAS STOK</td></tr>
+        <tr><td class="${h}">TAHUN</td><td class="${h}">MAKSIMUM<br>(Kuantiti)</td><td class="${h}">MENOKOK<br>(Kuantiti)</td><td class="${h}">MINIMUM<br>(Kuantiti)</td></tr>
+        <tr><td class="${c} text-center">${escapeHtml(year)}</td><td class="${c} text-center">${item.paraMaks || ''}</td><td class="${c} text-center">${item.reorder === null ? '' : item.reorder}</td><td class="${c} text-center">${item.paraMin || ''}</td></tr>
+        <tr>${blank(4)}</tr>
+      </table>
+
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:12%">${'<col style="width:11%">'.repeat(8)}</colgroup>
+        <tr><td colspan="9" class="${h}">TERIMAAN STOK SUKU TAHUN</td></tr>
+        <tr><td rowspan="2" class="${h}">TAHUN</td><td colspan="2" class="${h}">PERTAMA</td><td colspan="2" class="${h}">KEDUA</td><td colspan="2" class="${h}">KETIGA</td><td colspan="2" class="${h}">KEEMPAT</td></tr>
+        <tr>${('<td class="' + h + ' font-normal">Kuantiti</td><td class="' + h + ' font-normal">Nilai (RM)</td>').repeat(4)}</tr>
+        <tr><td class="${c} text-center">${escapeHtml(year)}</td>${qCells('inQ')}</tr>
+        <tr>${blank(9)}</tr>
+        <tr><td colspan="9" class="${h}">KELUARAN STOK SUKU TAHUN</td></tr>
+        <tr><td rowspan="2" class="${h}">TAHUN</td><td colspan="2" class="${h}">PERTAMA</td><td colspan="2" class="${h}">KEDUA</td><td colspan="2" class="${h}">KETIGA</td><td colspan="2" class="${h}">KEEMPAT</td></tr>
+        <tr>${('<td class="' + h + ' font-normal">Kuantiti</td><td class="' + h + ' font-normal">Nilai (RM)</td>').repeat(4)}</tr>
+        <tr><td class="${c} text-center">${escapeHtml(year)}</td>${qCells('outQ')}</tr>
+        <tr>${blank(9)}</tr>
+      </table>
+
+      <table class="w-full border-collapse table-fixed">
+        <tr><td rowspan="2" class="${h}">TAHUN</td><td colspan="2" class="${h}">TERIMAAN STOK TAHUNAN</td><td colspan="2" class="${h}">KELUARAN STOK TAHUNAN</td></tr>
+        <tr><td class="${h} font-normal">Kuantiti</td><td class="${h} font-normal">Nilai (RM)</td><td class="${h} font-normal">Kuantiti</td><td class="${h} font-normal">Nilai (RM)</td></tr>
+        <tr><td class="${c} text-center">${escapeHtml(year)}</td><td class="${c} text-center">${totIn}</td><td class="${c} text-right">${rm(totIn * harga)}</td><td class="${c} text-center">${totOut}</td><td class="${c} text-right">${rm(totOut * harga)}</td></tr>
+        <tr>${blank(5)}</tr>
+      </table>
+    </div>`;
+
+  const MIN_ROWS = 28;
+  const txRows = ledger.rows.map(r => `
+    <tr>
+      <td class="${c} text-center whitespace-nowrap">${escapeHtml(formatDate(r.tarikh))}</td>
+      <td class="${c} text-center break-words">${escapeHtml(r.ref)}</td>
+      <td class="${c} break-words">${escapeHtml(r.pihak)}</td>
+      <td class="${c} text-center">${r.masuk || ''}</td>
+      <td class="${c} text-right">${r.masuk ? rm(harga) : ''}</td>
+      <td class="${c} text-right">${r.masuk ? rm(r.masuk * harga) : ''}</td>
+      <td class="${c} text-center">${r.keluar || ''}</td>
+      <td class="${c} text-right">${r.keluar ? rm(r.keluar * harga) : ''}</td>
+      <td class="${c} text-center font-bold">${r.baki}</td>
+      <td class="${c} text-right">${rm(r.baki * harga)}</td>
+      <td class="${c} break-words">${escapeHtml(r.pegawai)}</td>
+    </tr>`).join('');
+  const padRows = Array.from({ length: Math.max(0, MIN_ROWS - ledger.rows.length) }, () => `<tr>${blank(11)}</tr>`).join('');
+
+  const partB = `
+    <div style="${isLast ? '' : 'break-after: page; page-break-after: always;'}" class="text-[10px] space-y-2">
+      ${header('Lampiran A')}
+      <div class="flex justify-between items-end">
+        <p class="font-bold text-[11px]">Transaksi Stok</p>
+        <p class="font-bold text-center text-[11px]">BAHAGIAN B</p>
+        <p class="text-right">No.Kad: <b>${escapeHtml(item.noKad)}</b> · ${escapeHtml(item.sku)}</p>
+      </div>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup>
+          <col style="width:10%"><col style="width:12%"><col style="width:13%"><col style="width:7%"><col style="width:7%"><col style="width:8%">
+          <col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:9%"><col style="width:12%">
+        </colgroup>
+        <thead>
+          <tr><th rowspan="2" class="${h}">Tarikh</th><th rowspan="2" class="${h}">No. PK/ BTB/ BPSS/ BPSI/ BPIN</th><th rowspan="2" class="${h}">Terima Daripada/ Keluar Kepada</th>
+            <th colspan="3" class="${h}">TERIMAAN</th><th colspan="2" class="${h}">KELUARAN</th><th colspan="2" class="${h}">BAKI</th><th rowspan="2" class="${h}">Nama Pegawai</th></tr>
+          <tr><th class="${h} font-normal">Kuantiti</th><th class="${h} font-normal">Seunit (RM)</th><th class="${h} font-normal">Jumlah (RM)</th>
+            <th class="${h} font-normal">Kuantiti</th><th class="${h} font-normal">Jumlah (RM)</th><th class="${h} font-normal">Kuantiti</th><th class="${h} font-normal">Jumlah (RM)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="${c} text-center whitespace-nowrap">${escapeHtml(formatDate(`${year}-01-01`))}</td><td class="${c}"></td><td colspan="6" class="${c} italic">Baki dibawa ke hadapan</td>
+            <td class="${c} text-center font-bold">${ledger.opening}</td><td class="${c} text-right">${rm(ledger.opening * harga)}</td><td class="${c}"></td></tr>
+          ${txRows}${padRows}
+        </tbody>
+      </table>
+      <div class="text-[9px] italic font-bold leading-tight pt-1">
+        <p>Nota:</p><p>PK = Pesanan Kerajaan</p><p>BTB = Borang Terimaan Barang-barang</p><p>BPSS = Borang Permohonan Stok (KEW.PS-7)</p><p>BPSI= Borang Permohonan Stok (KEW.PS-8)</p><p>BPIN = Borang Pindahan Stok (KEW.PS-17)</p>
+      </div>
+    </div>`;
+
+  return partA + partB;
+}
+
+// ---- KEW.PS-4 ----
+async function generateKewPs4(prefix) {
+  let data;
+  try {
+    data = await dsPrepare(prefix);
+  } catch (err) {
+    showToast('Gagal menyediakan Senarai Daftar Stok: ' + authErrorMessage(err), 'error');
+    return;
+  }
+  const { sel, year, list, ledgerOf } = data;
+  if (list.length === 0) {
+    showToast('Tiada item untuk dijana.', 'error');
+    return;
+  }
+  const c = 'border border-black px-1.5 py-1';
+  const h = `${c} bg-slate-200 font-bold text-center`;
+  // Aktif: ada baki atau ada pergerakan dalam tahun dipilih
+  const rows = list.map((i, idx) => {
+    const aktif = i.baki > 0 || ledgerOf(i).rows.length > 0;
+    const nilai = i.baki * i.harga;
+    return { ...i, bil: idx + 1, nilai, status: aktif ? 'Aktif' : 'Tidak Aktif' };
+  });
+  const total = rows.reduce((s, r) => s + r.nilai, 0);
+  const MIN_ROWS = 30;
+  const pad = Array.from({ length: Math.max(0, MIN_ROWS - rows.length) }, () => `<tr>${`<td class="${c}">&nbsp;</td>`.repeat(6)}</tr>`).join('');
+
+  dsOpenPreview(`
+    <div class="print-portrait text-black font-sans text-[11px] space-y-3">
+      <div class="flex justify-between text-[10px]"><span>Pekeliling Perbendaharaan Malaysia</span><span>AM 6.3 Lampiran B</span></div>
+      <p class="text-right font-bold text-xs">KEW.PS-4</p>
+      <h2 class="text-center font-bold text-xs">SENARAI DAFTAR STOK</h2>
+      <p class="text-center">${escapeHtml(dsStoreName(prefix))}${sel.cat ? ` · ${escapeHtml(sel.cat)}` : ''} · Tahun ${escapeHtml(year)} · Setakat ${escapeHtml(formatDate(todayISODate()))}</p>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:7%"><col style="width:10%"><col style="width:16%"><col style="width:39%"><col style="width:13%"><col style="width:15%"></colgroup>
+        <thead>
+          <tr><th class="${h}">Bil.</th><th class="${h}">No. Kad</th><th class="${h}">No. Kod</th><th class="${h}">Perihal Stok</th><th class="${h}">Nilai Baki Semasa (RM)</th><th class="${h}">Status Stok (Aktif/ Tidak Aktif/ Kad Dibatalkan)</th></tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td class="${c} text-center">${r.bil}</td>
+              <td class="${c} text-center">${escapeHtml(r.noKad)}</td>
+              <td class="${c} break-words">${escapeHtml(r.sku)}</td>
+              <td class="${c} break-words">${escapeHtml(r.nama)}</td>
+              <td class="${c} text-right">${formatRM(r.nilai)}</td>
+              <td class="${c} text-center">${r.status}</td>
+            </tr>`).join('')}
+          ${pad}
+        </tbody>
+        <tfoot>
+          <tr><td colspan="4" class="${h}">JUMLAH KESELURUHAN</td><td class="${c} text-right font-bold">${formatRM(total)}</td><td class="${c} bg-black"></td></tr>
+        </tfoot>
+      </table>
+    </div>`);
 }
 
 
@@ -5911,6 +6500,7 @@ function renderAll() {
   renderKewPs14Table();
   renderKlinikView();
   renderAdminKlinik();
+  renderDaftarPanels();
   updateAdminTaskBadges();
 }
 

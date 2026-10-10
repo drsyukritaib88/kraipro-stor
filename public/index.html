@@ -108,6 +108,14 @@
         display: none !important;
       }
     }
+    /* Borang menegak (KEW.PS-3 / KEW.PS-4): halaman A4 potret */
+    @page portrait {
+      size: A4 portrait;
+      margin: 12mm;
+    }
+    .print-portrait {
+      page: portrait;
+    }
     /* Tab: ikon guna warna aksen setiap tab; ikut warna teks apabila aktif */
     .tab-pill .tab-icon { color: var(--tab-accent, #7c3aed); transition: color .2s ease; }
     .tab-pill.is-active .tab-icon { color: inherit; }
@@ -809,6 +817,9 @@
         <div id="klinik-stock-list" class="space-y-2"></div>
       </div>
 
+      <!-- Daftar Stok KEW.PS-3 & KEW.PS-4 (stor klinik) -->
+      <div id="ds-klinik-panel" class="bg-white p-4 sm:p-5 rounded-3xl shadow-sm border border-slate-200/80"></div>
+
       <!-- Sejarah bulan ini -->
       <div class="bg-white p-4 sm:p-5 rounded-3xl shadow-sm border border-slate-200/80 space-y-3">
         <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-clock-rotate-left text-purple-600 mr-1"></i> Rekod Bulan Ini</h3>
@@ -972,6 +983,9 @@
               </div>
 
               <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                <button type="button" onclick="openAutoStockLevels()" title="Kira Min, Menokok & Maks setiap item daripada purata penggunaan bulanan" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs px-3 py-2 rounded-xl transition shadow flex items-center gap-1.5">
+                  <i class="fa-solid fa-calculator"></i> Kira Paras Stok
+                </button>
                 <button type="button" onclick="printMasterCatalogue()" class="bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs px-3 py-2 rounded-xl transition shadow flex items-center gap-1.5">
                   <i class="fa-solid fa-print"></i> Cetak
                 </button>
@@ -1058,10 +1072,10 @@
                 </div>
                 <div>
                   <h3 class="text-xs sm:text-base font-black tracking-wide flex items-center gap-2">
-                    <span>2. SENARAI ITEM PERLU REORDER (PARAS MINIMUM)</span>
+                    <span>2. SENARAI ITEM PERLU REORDER (PARAS MENOKOK)</span>
                     <span id="reorder-count-badge" class="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow">0 ITEM</span>
                   </h3>
-                  <p class="text-[11px] sm:text-xs text-rose-200">Senarai item yang berada di bawah atau pada paras minimum stok</p>
+                  <p class="text-[11px] sm:text-xs text-rose-200">Item dengan baki pada atau di bawah paras menokok (2 bulan penggunaan). "Bawah Minimum" = baki 1 bulan atau kurang.</p>
                 </div>
               </div>
             </div>
@@ -1076,8 +1090,10 @@
                     <th class="p-3">Perihal Barang</th>
                     <th class="p-3">Kategori</th>
                     <th class="p-3 text-center">Baki</th>
-                    <th class="p-3 text-center">Min (Reorder)</th>
-                    <th class="p-3 text-center">Kekurangan</th>
+                    <th class="p-3 text-center">Min</th>
+                    <th class="p-3 text-center">Menokok</th>
+                    <th class="p-3 text-center">Maks</th>
+                    <th class="p-3 text-center" title="Kuantiti untuk mencapai paras maksimum (atau paras menokok jika maksimum belum ditetapkan)">Cadangan Pesanan</th>
                     <th class="p-3 text-center">Status</th>
                   </tr>
                 </thead>
@@ -1451,6 +1467,9 @@
             </div>
             <div id="kewps14-month-detail" class="hidden"></div>
           </div>
+
+          <!-- Daftar Stok KEW.PS-3 & Senarai Daftar Stok KEW.PS-4 (stor daerah) -->
+          <div id="ds-daerah-panel" class="border-t border-slate-100 pt-6"></div>
         </div>
 
         <!-- ADMIN SUBTAB: PANTAU STOR KLINIK -->
@@ -1720,15 +1739,30 @@
           </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs font-bold text-slate-700 mb-1">Min / Reorder Level</label>
-            <input type="number" id="modal-item-reorder" min="0" value="5" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-xs font-extrabold text-slate-800">Paras Stok</label>
+            <button type="button" onclick="fillItemLevelsFromUsage()" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] px-2.5 py-1 rounded-lg shadow"><i class="fa-solid fa-calculator mr-1"></i>Kira daripada penggunaan</button>
           </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-700 mb-1">Baki Stok Semasa</label>
-            <input type="number" id="modal-item-baki" min="0" value="0" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">Minimum <span class="font-medium text-slate-500">(1 bln)</span></label>
+              <input type="number" id="modal-item-min" min="0" value="0" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">Menokok / Reorder <span class="font-medium text-slate-500">(2 bln)</span></label>
+              <input type="number" id="modal-item-reorder" min="0" value="5" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">Maksimum <span class="font-medium text-slate-500">(3 bln)</span></label>
+              <input type="number" id="modal-item-max" min="0" value="0" class="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            </div>
           </div>
+          <p id="modal-item-usage-note" class="text-[11px] text-slate-600"></p>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">Baki Stok Semasa</label>
+          <input type="number" id="modal-item-baki" min="0" value="0" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
         </div>
       </div>
 
