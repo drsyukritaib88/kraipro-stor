@@ -5147,6 +5147,8 @@ let klinikLogs = [];             // log bulan semasa / bulan dipilih
 let klinikLogUnsub = null;
 let klinikDraftQty = {};         // itemId -> kuantiti keluar dipilih
 let klinikSetupDraft = {};       // itemId -> baki awal
+let klinikSetupCat = '';         // penapis kategori ('' = semua)
+let klinikStockCat = '';
 let adminKlinikMonth = '';
 let adminKlinikSelected = '';
 
@@ -5165,6 +5167,8 @@ function resetKlinikState() {
   klinikLogs = [];
   klinikDraftQty = {};
   klinikSetupDraft = {};
+  klinikSetupCat = '';
+  klinikStockCat = '';
   adminKlinikMonth = '';
   adminKlinikSelected = '';
 }
@@ -5326,8 +5330,12 @@ function renderKlinikSetupList() {
     updateKlinikSetupCount();
   }
 
+  if (klinikSetupCat && !items.some(i => itemCategoryName(i) === klinikSetupCat)) klinikSetupCat = '';
+  const tabs = document.getElementById('klinik-setup-cat-tabs');
+  if (tabs) tabs.innerHTML = buildCategoryTabsHtml(items, klinikSetupCat, 'setKlinikSetupCat', false);
+
   const q = (document.getElementById('klinik-setup-search')?.value || '').trim().toLowerCase();
-  const list = items.filter(i => klinikMatches(i, q));
+  const list = items.filter(i => klinikMatches(i, q) && (!klinikSetupCat || itemCategoryName(i) === klinikSetupCat));
   if (list.length === 0) {
     box.innerHTML = '<p class="text-center text-sm text-slate-400 py-6">Tiada item dijumpai.</p>';
     return;
@@ -5350,6 +5358,16 @@ function renderKlinikSetupList() {
       }).join('');
     return `<p class="text-[11px] font-extrabold uppercase tracking-wider text-purple-700 pt-2">${escapeHtml(cat)}</p>${rows}`;
   }).join('');
+}
+
+function setKlinikSetupCat(cat) {
+  klinikSetupCat = cat;
+  renderKlinikSetupList();
+}
+
+function setKlinikStockCat(cat) {
+  klinikStockCat = cat;
+  renderKlinikStockList();
 }
 
 function setKlinikSetupQty(id, value) {
@@ -5540,13 +5558,17 @@ function renderKlinikStockList() {
   if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
 
   const doc = klinikDocFor(myKlinikUnit());
+  const tabs = document.getElementById('klinik-stock-cat-tabs');
   if (!doc || !doc.bakiAwalDikunci) {
     box.innerHTML = '';
+    if (tabs) tabs.innerHTML = '';
     return;
   }
   const q = (document.getElementById('klinik-search')?.value || '').trim().toLowerCase();
   const all = klinikItemList(doc);
-  const list = all.filter(it => klinikMatches(it, q))
+  if (klinikStockCat && !all.some(i => itemCategoryName(i) === klinikStockCat)) klinikStockCat = '';
+  if (tabs) tabs.innerHTML = all.length ? buildCategoryTabsHtml(all, klinikStockCat, 'setKlinikStockCat', false) : '';
+  const list = all.filter(it => klinikMatches(it, q) && (!klinikStockCat || itemCategoryName(it) === klinikStockCat))
     .sort((a, b) => (b.baki > 0) - (a.baki > 0) || String(a.nama).localeCompare(String(b.nama)));
 
   if (list.length === 0) {
