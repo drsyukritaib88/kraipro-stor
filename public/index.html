@@ -681,8 +681,9 @@
           <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
             <div class="sm:col-span-7">
               <label class="block text-xs font-semibold text-slate-600 mb-1">Item Stok</label>
-              <select id="req-item-select" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
+              <select id="req-item-select" onchange="renderReqItemPreview()" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium">
               </select>
+              <div id="req-item-preview" class="hidden mt-2 flex items-center gap-3 bg-white border border-slate-200 rounded-xl p-2"></div>
             </div>
 
             <div class="sm:col-span-3">
@@ -718,6 +719,41 @@
         <button type="button" id="req-submit-btn" onclick="submitRequest()" class="disabled:opacity-60 disabled:cursor-not-allowed bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-6 py-3 rounded-xl transition shadow-lg flex items-center gap-2">
           <i class="fa-solid fa-paper-plane"></i> Hantar Permohonan Stok
         </button>
+      </div>
+
+      <!-- MOHON ITEM BAHARU (tiada dalam Stok Induk) -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 class="text-md font-extrabold text-slate-800 flex items-center gap-2"><i class="fa-solid fa-lightbulb text-amber-500"></i> Mohon Item Baharu</h3>
+            <p class="text-xs text-slate-500">Item yang anda perlukan tetapi <b>tiada dalam senarai Stok Induk</b>. Permohonan akan disemak oleh pegawai pelulus untuk pembelian.</p>
+          </div>
+          <button type="button" id="newitem-toggle" onclick="toggleNewItemForm()" class="shrink-0 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl shadow"><i class="fa-solid fa-plus mr-1"></i> Mohon Item Baharu</button>
+        </div>
+        <div id="newitem-form" class="hidden bg-amber-50/60 border border-amber-200 rounded-xl p-4 space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <label class="font-bold text-slate-700 sm:col-span-2">Nama item <span class="text-rose-500">*</span>
+              <input type="text" id="newitem-nama" maxlength="150" placeholder="Cth: Bonding agent universal 5ml" class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 font-medium focus:ring-2 focus:ring-purple-500">
+            </label>
+            <label class="font-bold text-slate-700 sm:col-span-2">Spesifikasi / jenama / saiz <span class="font-medium text-slate-500">(pilihan)</span>
+              <input type="text" id="newitem-spek" maxlength="300" placeholder="Cth: 3M Single Bond Universal, botol 5ml" class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 font-medium focus:ring-2 focus:ring-purple-500">
+            </label>
+            <label class="font-bold text-slate-700">Kuantiti <span class="text-rose-500">*</span>
+              <input type="number" id="newitem-qty" min="1" value="1" class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 font-medium focus:ring-2 focus:ring-purple-500">
+            </label>
+            <label class="font-bold text-slate-700">Unit
+              <input type="text" id="newitem-unit" list="newitem-unit-list" maxlength="30" placeholder="Box" class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 font-medium focus:ring-2 focus:ring-purple-500">
+              <datalist id="newitem-unit-list"></datalist>
+            </label>
+            <label class="font-bold text-slate-700 sm:col-span-2">Justifikasi / kegunaan <span class="text-rose-500">*</span>
+              <textarea id="newitem-justifikasi" maxlength="500" rows="2" placeholder="Cth: Diperlukan untuk rawatan restoratif; item sedia ada tidak sesuai kerana..." class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 font-medium focus:ring-2 focus:ring-purple-500"></textarea>
+            </label>
+          </div>
+          <div class="flex justify-end">
+            <button type="button" onclick="submitNewItemRequest()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-xl shadow"><i class="fa-solid fa-paper-plane mr-1"></i> Hantar Permohonan Item Baharu</button>
+          </div>
+        </div>
+        <div id="newitem-mine-list" class="space-y-2"></div>
       </div>
 
       <div class="space-y-6">
@@ -805,6 +841,7 @@
         <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-truck-ramp-box text-emerald-600 mr-1"></i> Stok Sampai: Sahkan Terima</h3>
         <p class="text-xs text-slate-500 -mt-1">Semak kuantiti yang benar-benar diterima, kemudian sahkan. Stok akan dimasukkan ke stor klinik.</p>
         <div id="klinik-receipts-list" class="space-y-3"></div>
+        <div id="klinik-pindahan-masuk-list" class="space-y-3"></div>
       </div>
 
       <!-- Stok klinik & rekod keluar -->
@@ -815,6 +852,29 @@
         <input type="search" id="klinik-search" oninput="renderKlinikStockList()" placeholder="Cari item (nama / kod)..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-purple-500">
         <div id="klinik-stock-cat-tabs" class="flex flex-wrap gap-1.5"></div>
         <div id="klinik-stock-list" class="space-y-2"></div>
+      </div>
+
+      <!-- Pindah stok ke klinik lain / pulang ke stor daerah (KEW.PS-17) -->
+      <div id="klinik-pindah-card" class="hidden bg-white p-4 sm:p-5 rounded-3xl shadow-sm border border-slate-200/80 space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-right-left text-purple-600 mr-1"></i> Pindah / Pulang Stok</h3>
+          <button type="button" id="klinik-pindah-toggle" onclick="toggleKlinikPindahForm()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl shadow"><i class="fa-solid fa-plus mr-1"></i> Pindahan Baharu</button>
+        </div>
+        <div id="klinik-pindah-form" class="hidden space-y-3 bg-purple-50/60 border border-purple-200 rounded-2xl p-3">
+          <label class="block text-xs font-bold text-slate-700">Pindah kepada
+            <select id="klinik-pindah-ke" class="mt-1 w-full bg-white border border-slate-300 rounded-xl px-3 py-3 text-sm font-semibold focus:ring-2 focus:ring-purple-500"></select>
+          </label>
+          <input type="search" id="klinik-pindah-search" oninput="renderKlinikPindahItems()" placeholder="Cari item (nama / kod)..." class="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-purple-500">
+          <div id="klinik-pindah-items" class="space-y-1.5 max-h-[50vh] overflow-y-auto pr-1"></div>
+          <label class="block text-xs font-bold text-slate-700">Catatan / sebab (pilihan)
+            <input type="text" id="klinik-pindah-catatan" maxlength="200" placeholder="Cth: Lebihan stok / hampir luput" class="mt-1 w-full bg-white border border-slate-300 rounded-xl px-3 py-2.5 text-sm font-medium focus:ring-2 focus:ring-purple-500">
+          </label>
+          <div class="flex items-center justify-between gap-3">
+            <p id="klinik-pindah-count" class="text-xs font-bold text-slate-500">0 item dipilih</p>
+            <button type="button" onclick="submitKlinikPindahan()" class="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-sm px-5 py-3 rounded-2xl shadow-lg shadow-purple-600/25"><i class="fa-solid fa-paper-plane mr-1"></i> Hantar</button>
+          </div>
+        </div>
+        <div id="klinik-pindah-list" class="space-y-2"></div>
       </div>
 
       <!-- Daftar Stok KEW.PS-3 & KEW.PS-4 (stor klinik) -->
@@ -967,6 +1027,38 @@
               <i class="fa-solid fa-clock-rotate-left mr-1"></i> <span id="hist-admin-load-older-text">Papar permohonan lebih lama</span>
             </button>
             <div id="admin-completed-container" class="space-y-3">
+            </div>
+          </div>
+
+          <!-- Permohonan item baharu (tiada dalam Stok Induk) -->
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                  <i class="fa-solid fa-lightbulb text-amber-500"></i> Permohonan Item Baharu
+                  <span id="newitem-admin-badge" class="hidden bg-amber-400 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-full">0</span>
+                </h3>
+                <p class="text-xs text-slate-500">Item yang dipohon tetapi tiada dalam Stok Induk. Tambah ke Stok Induk selepas dibeli, atau tolak dengan catatan.</p>
+              </div>
+              <label class="flex items-center gap-2 text-xs font-bold text-slate-600">
+                <input type="checkbox" id="newitem-admin-showall" onchange="renderNewItemAdmin()" class="w-4 h-4 rounded text-purple-600"> Papar yang telah selesai
+              </label>
+            </div>
+            <div class="overflow-x-auto border border-slate-200 rounded-xl">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                    <th class="p-3">Tarikh</th>
+                    <th class="p-3">Pemohon / Unit</th>
+                    <th class="p-3">Item &amp; Spesifikasi</th>
+                    <th class="p-3 text-center">Kuantiti</th>
+                    <th class="p-3">Justifikasi</th>
+                    <th class="p-3 text-center">Status</th>
+                    <th class="p-3 text-center">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="newitem-admin-body" class="divide-y divide-slate-100 font-medium"></tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -1168,8 +1260,19 @@
             <p class="text-xs text-slate-500">Buat pesanan bekalan stok baru melalui LPO dan sahkan penerimaan stok</p>
           </div>
 
+          <div class="bg-gradient-to-r from-blue-50 to-purple-50 border-2 border-dashed border-blue-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-extrabold text-slate-800"><i class="fa-solid fa-file-pdf text-rose-600 mr-1"></i> Daftar terus daripada PO ePerolehan</p>
+              <p class="text-xs text-slate-600">Muat naik PDF Pesanan Kerajaan (NGEP). No. PO, pembekal, item, kuantiti &amp; harga diisi automatik dan dipadankan dengan Stok Induk.</p>
+            </div>
+            <label class="shrink-0 inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow cursor-pointer">
+              <i class="fa-solid fa-upload"></i> Muat Naik PO (PDF)
+              <input type="file" id="po-pdf-input" accept="application/pdf,.pdf" onchange="onPoPdfSelected(event)" class="hidden">
+            </label>
+          </div>
+
           <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
-            <h4 class="text-xs font-bold uppercase text-slate-700 tracking-wider">Borang Pesanan LPO Baru</h4>
+            <h4 class="text-xs font-bold uppercase text-slate-700 tracking-wider">Borang Pesanan LPO Baru (manual)</h4>
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label class="block text-[11px] font-bold text-slate-600 mb-1">No. LPO <span class="text-rose-500">*</span></label>
@@ -1508,6 +1611,33 @@
           </div>
 
           <div id="admin-klinik-detail" class="hidden bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4"></div>
+
+          <!-- Pindahan antara klinik & pulangan ke stor daerah -->
+          <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200/80 space-y-4">
+            <div class="border-b border-slate-100 pb-3">
+              <h3 class="text-lg font-extrabold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-right-left text-purple-600"></i> Pindahan &amp; Pulangan Stok (KEW.PS-17)
+                <span id="admin-pulangan-badge" class="hidden bg-amber-400 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-full">0</span>
+              </h3>
+              <p class="text-xs text-slate-500">Pindahan antara klinik (disahkan oleh klinik penerima) dan pulangan stok ke stor daerah (disahkan di sini; baki stok induk bertambah).</p>
+            </div>
+            <div class="overflow-x-auto border border-slate-200 rounded-xl">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-slate-900 text-amber-400 font-bold uppercase">
+                    <th class="p-3">No. BPIN</th>
+                    <th class="p-3">Tarikh</th>
+                    <th class="p-3">Daripada</th>
+                    <th class="p-3">Kepada</th>
+                    <th class="p-3">Item</th>
+                    <th class="p-3 text-center">Status</th>
+                    <th class="p-3 text-center">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-pindahan-body" class="divide-y divide-slate-100 font-medium"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         <!-- ADMIN SUBTAB: JEJAK AUDIT -->
@@ -1725,7 +1855,7 @@
                 <i class="fa-solid fa-plus-circle"></i> Tambah
               </button>
             </div>
-            <select id="modal-item-unit" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            <select id="modal-item-unit" onchange="updateItemUnitKlinikNote()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
             </select>
 
             <div id="inline-unit-box" class="hidden mt-2 p-2 bg-purple-50 border border-purple-200 rounded-xl space-y-2">
@@ -1737,6 +1867,37 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3">
+          <p class="text-xs font-extrabold text-slate-800 mb-2">Gambar Item <span class="font-medium text-slate-500">(pilihan)</span></p>
+          <div class="flex items-center gap-3">
+            <div id="modal-item-image-preview" class="w-24 h-24 shrink-0 rounded-xl bg-white border border-dashed border-slate-300 flex items-center justify-center overflow-hidden text-slate-300">
+              <i class="fa-solid fa-image text-3xl"></i>
+            </div>
+            <div class="space-y-2">
+              <label class="inline-flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-3 py-2 rounded-xl shadow cursor-pointer">
+                <i class="fa-solid fa-camera"></i> Pilih / Ambil Gambar
+                <input type="file" id="modal-item-image-input" accept="image/*" onchange="onItemImageSelected(event)" class="hidden">
+              </label>
+              <button type="button" id="modal-item-image-remove" onclick="removeItemImageDraft()" class="hidden block bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs px-3 py-2 rounded-xl"><i class="fa-solid fa-trash mr-1"></i> Buang Gambar</button>
+              <p id="modal-item-image-note" class="text-[11px] text-slate-500">Gambar akan dikecilkan secara automatik (± 30 KB).</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-sky-50 border border-sky-200 rounded-xl p-3 space-y-2">
+          <div>
+            <p class="text-xs font-extrabold text-slate-800">Klinik guna unit lebih kecil? <span class="font-medium text-slate-500">(pilihan)</span></p>
+            <p class="text-[11px] text-slate-600">Isi jika stor daerah keluarkan dalam <b class="ds-store-unit">Box</b> tetapi klinik guna sedikit demi sedikit (cth: paket). Biarkan kosong jika klinik juga kira dalam <b class="ds-store-unit">Box</b>.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-800">
+            <span>1 <span class="ds-store-unit">Box</span> mengandungi</span>
+            <input type="number" id="modal-item-faktor-klinik" min="1" value="1" oninput="updateItemUnitKlinikNote()" aria-label="Bilangan unit kecil dalam satu unit stor" class="w-20 bg-white border border-slate-300 rounded-xl p-2 text-center text-sm font-extrabold focus:ring-2 focus:ring-purple-500">
+            <input type="text" id="modal-item-unit-klinik" list="modal-item-unit-klinik-list" maxlength="30" placeholder="Paket" oninput="updateItemUnitKlinikNote()" aria-label="Nama unit kecil di klinik" class="w-32 bg-white border border-slate-300 rounded-xl p-2 text-sm font-semibold focus:ring-2 focus:ring-purple-500">
+            <datalist id="modal-item-unit-klinik-list"></datalist>
+          </div>
+          <p id="modal-item-unit-klinik-note" class="text-[11px] font-semibold"></p>
         </div>
 
         <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
@@ -1849,6 +2010,38 @@
         <div id="kewps8-content">
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- MODAL: SEMAK PO DARIPADA PDF -->
+  <div id="po-import-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-2 sm:p-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-6xl w-full max-h-[94vh] flex flex-col">
+      <div class="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+        <div>
+          <h3 class="text-base font-black text-slate-800"><i class="fa-solid fa-file-pdf text-rose-600 mr-1"></i> Semak PO sebelum disimpan</h3>
+          <p id="po-import-subtitle" class="text-xs text-slate-500 mt-0.5"></p>
+        </div>
+        <button type="button" onclick="closePoImport()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+      </div>
+      <div id="po-import-body" class="overflow-auto p-5 space-y-4 text-xs flex-grow"></div>
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-100 p-4">
+        <label class="flex items-center gap-2 text-xs font-bold text-slate-700">
+          <input type="checkbox" id="po-import-update-price" checked class="w-4 h-4 rounded text-purple-600"> Kemas kini harga seunit Stok Induk mengikut PO
+        </label>
+        <div class="flex gap-2">
+          <button type="button" onclick="closePoImport()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl">Batal</button>
+          <button type="button" onclick="savePoImport()" class="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-xl shadow"><i class="fa-solid fa-floppy-disk mr-1"></i> Simpan LPO</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAPARAN GAMBAR ITEM (BESAR) -->
+  <div id="image-lightbox" onclick="closeImageLightbox()" class="fixed inset-0 bg-slate-950/85 z-[70] hidden flex items-center justify-center p-4 no-print">
+    <div class="max-w-lg w-full text-center space-y-3" onclick="event.stopPropagation()">
+      <img id="image-lightbox-img" alt="" class="mx-auto max-h-[70vh] rounded-2xl bg-white shadow-2xl">
+      <p id="image-lightbox-caption" class="text-white font-bold text-sm"></p>
+      <button type="button" onclick="closeImageLightbox()" class="bg-white/90 hover:bg-white text-slate-800 font-bold text-xs px-4 py-2 rounded-xl">Tutup</button>
     </div>
   </div>
 

@@ -241,7 +241,7 @@ function startFirestoreListeners() {
       return;
     }
     const data = snap.data();
-    if (Array.isArray(data.items)) items = data.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, id: String(i.id), baki: toInt(i.baki), reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks), harga: parseFloat(i.harga) || 0 }));
+    if (Array.isArray(data.items)) items = data.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, id: String(i.id), baki: toInt(i.baki), reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks), unitKlinik: String(i.unitKlinik || ''), faktorKlinik: Math.max(1, toInt(i.faktorKlinik) || 1), gambarV: toInt(i.gambarV), harga: parseFloat(i.harga) || 0 }));
     if (Array.isArray(data.pembekalList)) pembekalList = data.pembekalList;
     // LPO format lama (dalam dokumen stok): papar sementara & pindahkan ke koleksi kraipro_lpo
     legacyStateLpo = Array.isArray(data.lpoList) ? data.lpoList.filter(l => l && typeof l === 'object') : [];
@@ -260,6 +260,7 @@ function startFirestoreListeners() {
   if (isAdminLoggedIn) {
     firestoreUnsubscribers.push(reqCol.where('tarikh', '>=', requestWindowStart()).onSnapshot((qs) => {
       requestSources.recent = toRequests(qs);
+      requestsRecentLoaded = true;
       rebuildRequests();
     }, onFirestoreError('permohonan')));
     firestoreUnsubscribers.push(reqCol.where('status', '==', 'Pending').onSnapshot((qs) => {
@@ -302,6 +303,12 @@ function startFirestoreListeners() {
   // Stor klinik (penjaga stor klinik & pentadbir)
   startKlinikListeners();
 
+  // Permohonan item baharu (tiada dalam Stok Induk)
+  startNewItemListener();
+
+  // Ringkasan stok diluluskan kepada setiap unit (purata penggunaan setahun)
+  startUnitUsageListener();
+
   // Log audit (pelulus & SuperAdmin sahaja)
   if (isAdminLoggedIn) {
     firestoreUnsubscribers.push(db.collection('kraipro_audit').orderBy('createdAt', 'desc').limit(200).onSnapshot((qs) => {
@@ -328,6 +335,7 @@ function rebuildRequests() {
     String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id))
   );
   renderAll();
+  scheduleUnitUsageSync();
 }
 
 // Muat permohonan sebelum tempoh semasa (sekali sahaja, tidak dipantau secara langsung)
@@ -679,9 +687,9 @@ let pendingRestore = null;
 async function collectFullBackup() {
   const docsOf = async (name) => (await db.collection(name).get()).docs.map(d => ({ id: d.id, ...d.data() }));
   const stateSnap = await stateDocRef().get();
-  const [requestsAll, usersAll, auditAll, countersAll, lpoAll, klinikAll, klinikLogAll] = await Promise.all([
+  const [requestsAll, usersAll, auditAll, countersAll, lpoAll, klinikAll, klinikLogAll, pindahanAll, itemImagesAll, itemBaharuAll] = await Promise.all([
     docsOf('kraipro_requests'), docsOf('kraipro_users'), docsOf('kraipro_audit'), docsOf('kraipro_counters'), docsOf('kraipro_lpo'),
-    docsOf('kraipro_klinik'), docsOf('kraipro_klinik_log')
+    docsOf('kraipro_klinik'), docsOf('kraipro_klinik_log'), docsOf('kraipro_pindahan'), docsOf('kraipro_item_images'), docsOf('kraipro_item_baharu')
   ]);
   const state = stateSnap.exists ? stateSnap.data() : { items: [], pembekalList: [] };
 
@@ -692,7 +700,7 @@ async function collectFullBackup() {
     createdBy: currentUserEmail,
     projectId: (firebase.app().options || {}).projectId || '',
     counts: backupCounts({ state, requests: requestsAll, users: usersAll, audit: auditAll, lpo: lpoAll }),
-    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll, lpo: lpoAll, klinik: klinikAll, klinikLog: klinikLogAll }
+    data: { state, requests: requestsAll, users: usersAll, audit: auditAll, counters: countersAll, lpo: lpoAll, klinik: klinikAll, klinikLog: klinikLogAll, pindahan: pindahanAll, itemImages: itemImagesAll, itemBaharu: itemBaharuAll }
   };
 }
 
@@ -777,7 +785,7 @@ function validateBackup(obj) {
     if (!Array.isArray(d[k])) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
   });
   if (d.lpo !== undefined && !Array.isArray(d.lpo)) throw new Error('Bahagian "lpo" dalam sandaran tidak sah.');
-  ['klinik', 'klinikLog'].forEach(k => {
+  ['klinik', 'klinikLog', 'pindahan', 'itemImages', 'itemBaharu'].forEach(k => {
     if (d[k] === undefined) return;
     if (!Array.isArray(d[k]) || d[k].some(x => !x || !SAFE_ID_RE.test(String(x.id || '')))) throw new Error(`Bahagian "${k}" dalam sandaran tidak sah.`);
   });
@@ -846,10 +854,10 @@ function onRestoreConfirmInput() {
   if (btn) btn.disabled = !ok || !pendingRestore;
 }
 
-async function commitInBatches(ops) {
-  for (let i = 0; i < ops.length; i += 400) {
+async function commitInBatches(ops, size = 400) {
+  for (let i = 0; i < ops.length; i += size) {
     const batch = db.batch();
-    ops.slice(i, i + 400).forEach(op => op(batch));
+    ops.slice(i, i + size).forEach(op => op(batch));
     await batch.commit();
   }
 }
@@ -919,6 +927,32 @@ async function confirmRestoreBackup() {
       });
     }
 
+    if (Array.isArray(d.pindahan)) {
+      const backupPinIds = new Set(d.pindahan.map(p => String(p.id)));
+      (safety.data.pindahan || []).forEach(p => {
+        if (!backupPinIds.has(String(p.id))) ops.push(b => b.delete(pindahanRef(p.id)));
+      });
+      d.pindahan.forEach(p => ops.push(b => b.set(pindahanRef(p.id), { ...strip(p), id: String(p.id) })));
+    }
+
+    if (Array.isArray(d.itemBaharu)) {
+      const backupNewIds = new Set(d.itemBaharu.map(n => String(n.id)));
+      (safety.data.itemBaharu || []).forEach(n => {
+        if (!backupNewIds.has(String(n.id))) ops.push(b => b.delete(db.collection('kraipro_item_baharu').doc(String(n.id))));
+      });
+      d.itemBaharu.forEach(n => ops.push(b => b.set(db.collection('kraipro_item_baharu').doc(String(n.id)), strip(n))));
+    }
+
+    // Gambar: kelompok kecil (setiap gambar sehingga ~120 KB; had 10 MB setiap permintaan)
+    const imageOps = [];
+    if (Array.isArray(d.itemImages)) {
+      const backupImgIds = new Set(d.itemImages.map(g => String(g.id)));
+      (safety.data.itemImages || []).forEach(g => {
+        if (!backupImgIds.has(String(g.id))) imageOps.push(b => b.delete(itemImageRef(g.id)));
+      });
+      d.itemImages.forEach(g => imageOps.push(b => b.set(itemImageRef(g.id), strip(g))));
+    }
+
     // 7. Stok & pembekal (ganti sepenuhnya; LPO kini dalam koleksi sendiri)
     const st = d.state;
     ops.push(b => b.set(stateDocRef(), {
@@ -928,6 +962,7 @@ async function confirmRestoreBackup() {
     }));
 
     await commitInBatches(ops);
+    await commitInBatches(imageOps, 40);
 
     const c = backupCounts(d);
     const when = formatDateTime(backup.createdAt);
@@ -950,7 +985,7 @@ function exportItemsToCSV() {
     return;
   }
 
-  const headers = ["SKU", "Nama Item", "Kategori", "SubKategori", "Packaging Unit", "Harga Seunit (RM)", "Baki Stok", "Reorder Level", "Paras Minimum", "Paras Maksimum"];
+  const headers = ["SKU", "Nama Item", "Kategori", "SubKategori", "Packaging Unit", "Harga Seunit (RM)", "Baki Stok", "Reorder Level", "Paras Minimum", "Paras Maksimum", "Unit Klinik", "Bilangan Unit Klinik"];
   const csvRows = [headers.join(",")];
 
   items.forEach(i => {
@@ -964,7 +999,9 @@ function exportItemsToCSV() {
       parseInt(i.baki || 0),
       parseInt(i.reorder || 5),
       toInt(i.paraMin),
-      toInt(i.paraMaks)
+      toInt(i.paraMaks),
+      `"${(i.unitKlinik || '').replace(/"/g, '""')}"`,
+      i.unitKlinik ? Math.max(1, toInt(i.faktorKlinik) || 1) : 1
     ];
     csvRows.push(row.join(","));
   });
@@ -1013,9 +1050,11 @@ function importItemsFromCSV(event) {
           // Fail CSV lama tiada lajur Min/Maks: kekalkan nilai sedia ada
           const paraMin = cols.length > 8 ? toInt(cols[8]) : toInt(existing.paraMin);
           const paraMaks = cols.length > 9 ? toInt(cols[9]) : toInt(existing.paraMaks);
+          const unitKlinik = cols.length > 10 ? String(cols[10] || '').slice(0, 30) : String(existing.unitKlinik || '');
+          const faktorKlinik = unitKlinik ? Math.max(1, toInt(cols.length > 11 ? cols[11] : existing.faktorKlinik) || 1) : 1;
           const newItem = {
             id: existingIdx !== -1 ? existing.id : String(Date.now() + i),
-            sku, nama, kategori: kat, subkategori: subkat, unit, harga, baki, reorder, paraMin, paraMaks
+            sku, nama, kategori: kat, subkategori: subkat, unit, harga, baki, reorder, paraMin, paraMaks, unitKlinik, faktorKlinik
           };
 
           if (existingIdx !== -1) {
@@ -1329,6 +1368,13 @@ function resetSessionState() {
   draftLpoItems = [];
   Object.keys(historyOpenMonths).forEach(k => { historyOpenMonths[k] = null; });
   resetKlinikState();
+  newItemRequests = [];
+  pendingNewItemLink = '';
+  unitUsageDocs = {};
+  requestsRecentLoaded = false;
+  unitUsageLoaded = false;
+  clearTimeout(unitUsageSyncTimer);
+  unitTotalsMemo = { src: null, year: '', data: {} };
 }
 
 async function handleAuthStateChanged(user) {
@@ -2048,6 +2094,24 @@ function getStockMovements(category, dateFilter) {
     });
   });
 
+  // Pulangan stok dari klinik (BPIN) yang diterima di stor daerah dikira sebagai penerimaan
+  pindahanList.forEach(p => {
+    if (p.keUnit !== PINDAHAN_DISTRICT || p.status !== 'Diterima') return;
+    const tarikh = todayISODateOf(p.terimaPada || p.tarikh);
+    if (!/^\d{4}-\d{2}/.test(tarikh) || !dateFilter(tarikh)) return;
+    p.items.forEach((i, idx) => {
+      const inv = findInventoryItem(i);
+      if ((inv ? inv.kategori : i.kategori) !== category) return;
+      const qty = Math.floor(toInt(p.terimaQty[idx]) / Math.max(1, toInt(i.faktor) || 1)); // unit klinik -> unit stor
+      if (qty <= 0) return;
+      const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
+      moves.push({
+        type: 'b', tarikh, month: tarikh.slice(5, 7), ref: p.id, pihak: `Pulangan ${p.dariUnit}`,
+        sku: i.sku, nama: i.nama || (inv && inv.nama), unit: i.unit || (inv && inv.unit), qty, harga, nilai: qty * harga
+      });
+    });
+  });
+
   requests.forEach(r => {
     // Tarikh pengeluaran = tarikh kelulusan (stok keluar ketika diluluskan)
     const tarikh = String(r.tarikhLulus || r.tarikh || '');
@@ -2637,7 +2701,7 @@ function renderBakiTable() {
     tr.innerHTML = `
       <td class="p-3.5 text-center font-extrabold ${isLow ? 'text-rose-800' : 'text-slate-400'}">${itemNumber}</td>
       <td class="p-3.5 font-black ${isLow ? 'text-rose-900' : 'text-slate-900'}">${escapeHtml(i.sku)}</td>
-      <td class="p-3.5 font-bold ${isLow ? 'text-rose-950' : 'text-slate-800'}">${escapeHtml(i.nama)}</td>
+      <td class="p-3.5 font-bold ${isLow ? 'text-rose-950' : 'text-slate-800'}"><div class="flex items-center gap-2">${itemThumbHtml(i.id)}<span>${escapeHtml(i.nama)}</span></div></td>
       <td class="p-3.5">
         <span class="${isLow ? 'bg-rose-200/80 text-rose-900' : 'bg-slate-100 text-slate-700'} px-2 py-0.5 rounded-md text-[11px] font-semibold">${escapeHtml(i.kategori)}</span>
         ${i.subkategori ? `<span class="ml-1 ${isLow ? 'bg-rose-300/80 text-rose-950' : 'bg-purple-50 text-purple-700'} px-2 py-0.5 rounded-md text-[10px] font-bold">${escapeHtml(i.subkategori)}</span>` : ''}
@@ -3154,7 +3218,7 @@ function renderMasterTable() {
     tr.innerHTML = `
       <td class="p-3 text-center font-extrabold ${isLow ? 'text-rose-800' : 'text-slate-400'}">${itemNumber}</td>
       <td class="p-3 font-black ${isLow ? 'text-rose-900' : 'text-slate-900'}">${escapeHtml(i.sku)}</td>
-      <td class="p-3 font-bold ${isLow ? 'text-rose-950' : 'text-slate-800'}">${escapeHtml(i.nama)}</td>
+      <td class="p-3 font-bold ${isLow ? 'text-rose-950' : 'text-slate-800'}"><div class="flex items-center gap-2">${itemThumbHtml(i.id)}<span>${escapeHtml(i.nama)}</span></div></td>
       <td class="p-3">${escapeHtml(i.kategori)} ${i.subkategori ? `(${escapeHtml(i.subkategori)})` : ''}</td>
       <td class="p-3 text-center"><span class="bg-purple-100 text-purple-900 px-2 py-0.5 rounded-lg text-xs font-bold">${unitText}</span></td>
       <td class="p-3 text-right font-bold whitespace-nowrap">RM ${(parseFloat(i.harga) || 0).toFixed(2)}</td>
@@ -3363,7 +3427,7 @@ function renderAdminRequests() {
       const rows = r.items.map((i, idx) => `
         <tr class="border-b border-slate-100">
           <td class="p-2 font-bold">${escapeHtml(i.sku)}</td>
-          <td class="p-2">${escapeHtml(i.nama)}</td>
+          <td class="p-2">${escapeHtml(i.nama)}${klinikUsageHtml(klinikItemKey(i), r.unit, true)}</td>
           <td class="p-2 text-center font-bold">${toInt(i.qtyMohon)}</td>
           <td class="p-2 text-center">
             <input type="number" id="admin-approve-qty-${r.id}-${idx}" min="0" max="${toInt(i.qtyMohon)}" value="${toInt(i.qtyMohon)}" class="w-16 p-1 border border-slate-300 rounded text-center text-xs font-bold">
@@ -3621,11 +3685,23 @@ function openItemModal(itemId = null) {
     if (document.getElementById('modal-item-baki')) document.getElementById('modal-item-baki').value = '0';
   }
 
-  updateItemUsageNote(itemId ? items.find(i => String(i.id) === String(itemId)) : null);
+  const editing = itemId ? items.find(i => String(i.id) === String(itemId)) : null;
+  const ukEl = document.getElementById('modal-item-unit-klinik');
+  const fkEl = document.getElementById('modal-item-faktor-klinik');
+  if (ukEl) ukEl.value = (editing && editing.unitKlinik) || '';
+  if (fkEl) fkEl.value = (editing && editing.unitKlinik) ? Math.max(1, toInt(editing.faktorKlinik) || 1) : 1;
+  const ukList = document.getElementById('modal-item-unit-klinik-list');
+  if (ukList) ukList.innerHTML = [...new Set(['Paket', 'Pcs', 'Biji', 'Helai', ...packagingUnits])].map(u => `<option value="${escapeHtml(u)}"></option>`).join('');
+  updateItemUnitKlinikNote();
+
+  updateItemUsageNote(editing);
+  prepareItemImageEditor(editing);
   modal.classList.remove('hidden');
 }
 
 function closeItemModal() {
+  itemImageDraft = undefined;
+  pendingNewItemLink = '';
   hideInlineSubCatInput();
   hideInlineUnitInput();
   const modal = document.getElementById('item-modal');
@@ -3753,9 +3829,15 @@ async function saveItem() {
   const paraMin = Math.max(0, toInt(document.getElementById('modal-item-min')?.value));
   const paraMaks = Math.max(0, toInt(document.getElementById('modal-item-max')?.value));
   const baki = parseInt(document.getElementById('modal-item-baki')?.value) || 0;
+  const unitKlinik = (document.getElementById('modal-item-unit-klinik')?.value || '').trim().slice(0, 30);
+  const faktorKlinik = unitKlinik ? Math.max(1, toInt(document.getElementById('modal-item-faktor-klinik')?.value) || 1) : 1;
 
   if (!sku || !nama) {
     showToast('Sila isi SKU dan Nama Item!', 'error');
+    return;
+  }
+  if (unitKlinik && faktorKlinik < 2) {
+    showToast(`Masukkan berapa ${unitKlinik} dalam 1 ${unit} (lebih daripada 1), atau kosongkan unit klinik.`, 'error');
     return;
   }
   if (paraMin > reorder) {
@@ -3769,8 +3851,20 @@ async function saveItem() {
 
   const itemData = {
     id: id || String(Date.now()),
-    sku, nama, kategori: kat, subkategori: subkat, unit, harga, reorder, paraMin, paraMaks, baki
+    sku, nama, kategori: kat, subkategori: subkat, unit, harga, reorder, paraMin, paraMaks, baki,
+    unitKlinik, faktorKlinik
   };
+
+  // Gambar disimpan dahulu (dokumen berasingan); versi baharu direkod pada item
+  if (itemImageDraft !== undefined) {
+    try {
+      const v = await runWithLoading('Menyimpan gambar item...', () => commitItemImageDraft(itemData.id));
+      if (typeof v === 'number') itemData.gambarV = v;
+    } catch (err) {
+      showToast('Gagal menyimpan gambar: ' + authErrorMessage(err), 'error');
+      return;
+    }
+  }
 
   if (id) {
     const item = items.find(i => String(i.id) === String(id));
@@ -3781,10 +3875,31 @@ async function saveItem() {
     addAuditLog("Tambah Item Baru", `Item baru [${sku}] ${nama} ditambah.`);
   }
 
+  const linkNewItem = pendingNewItemLink;
   const ok = await runWithLoading('Menyimpan item...', () => saveState());
+  if (ok && linkNewItem && !id) await finalizeNewItemLink(linkNewItem, itemData);
   closeItemModal();
   renderAll();
   if (ok) showToast('Item berjaya disimpan!', 'success');
+}
+
+function updateItemUnitKlinikNote() {
+  const el = document.getElementById('modal-item-unit-klinik-note');
+  if (!el) return;
+  const uk = (document.getElementById('modal-item-unit-klinik')?.value || '').trim();
+  const f = Math.max(1, toInt(document.getElementById('modal-item-faktor-klinik')?.value) || 1);
+  const unit = document.getElementById('modal-item-unit')?.value || 'unit';
+  document.querySelectorAll('.ds-store-unit').forEach(s => { s.textContent = unit; });
+  if (uk && f > 1) {
+    el.className = 'text-[11px] font-semibold text-emerald-700';
+    el.textContent = `✓ Contoh: stor daerah keluarkan 2 ${unit} → klinik terima ${2 * f} ${uk}. Klinik rekod penggunaan satu-satu ${uk}.`;
+  } else if (uk) {
+    el.className = 'text-[11px] font-semibold text-amber-700';
+    el.textContent = `Masukkan berapa ${uk} dalam 1 ${unit} (lebih daripada 1).`;
+  } else {
+    el.className = 'text-[11px] font-semibold text-slate-500';
+    el.textContent = `Tiada pecahan: klinik kira dalam ${unit}, sama seperti stor daerah.`;
+  }
 }
 
 // ---- Paras stok automatik: Minimum = 1 bulan, Menokok = 2 bulan, Maksimum = 3 bulan purata penggunaan ----
@@ -3906,6 +4021,7 @@ function deleteItem(id) {
   showConfirmModal('Padam Item', 'Adakah anda pasti mahu memadam item ini?', async () => {
     const deletedItem = items.find(i => String(i.id) === String(id));
     items = items.filter(i => String(i.id) !== String(id));
+    if (deletedItem && toInt(deletedItem.gambarV)) itemImageRef(id).delete().catch(err => console.warn('Gagal memadam gambar item:', err));
     if (deletedItem) addAuditLog("Padam Item", `Item [${deletedItem.sku}] ${deletedItem.nama} dipadam.`);
     const ok = await runWithLoading('Memadam item...', () => saveState());
     renderAll();
@@ -3962,8 +4078,11 @@ function populatePemohonDropdown() {
     return;
   }
 
+  const selected = select.value;
   select.innerHTML = '<option value="">-- Pilih Item Stok --</option>' +
-    filteredItems.map(i => `<option value="${escapeHtml(i.id)}">[${escapeHtml(i.sku)}] ${escapeHtml(i.nama)} (Baki: ${toInt(i.baki)})</option>`).join('');
+    filteredItems.map(i => `<option value="${escapeHtml(i.id)}">[${escapeHtml(i.sku)}] ${escapeHtml(i.nama)} (Baki: ${toInt(i.baki)})${toInt(i.gambarV) ? ' 📷' : ''}</option>`).join('');
+  if (selected && filteredItems.some(i => String(i.id) === selected)) select.value = selected;
+  renderReqItemPreview();
 }
 
 function addDraftItem() {
@@ -4024,7 +4143,7 @@ function renderDraftTable() {
     tr.className = 'border-b border-slate-100';
     tr.innerHTML = `
       <td class="p-3 font-bold text-slate-800">${escapeHtml(item.sku)}</td>
-      <td class="p-3 font-medium">${escapeHtml(item.nama)}</td>
+      <td class="p-3 font-medium"><div class="flex items-center gap-2">${itemThumbHtml(item.itemId)}<span>${escapeHtml(item.nama)}${klinikUsageHtml(item.itemId, requesterUnit(), true)}</span></div></td>
       <td class="p-3 text-slate-500"><span class="bg-purple-50 text-purple-700 px-2 py-0.5 rounded text-[10px] font-bold">${escapeHtml(item.kategori || '')}</span></td>
       <td class="p-3 text-center font-bold">${toInt(item.baki)}</td>
       <td class="p-3 text-center font-bold text-purple-700">${toInt(item.qtyMohon)}</td>
@@ -4564,6 +4683,514 @@ async function submitLpoOrder() {
   if (ok) showToast(`Pesanan LPO ${lpoNo} berjaya direkodkan!`, 'success');
 }
 
+// ------------------------------------------
+// 15b. MUAT NAIK PO (PDF ePEROLEHAN / NGEP)
+//   PDF dibaca dalam pelayar (pdf.js, dimuat hanya apabila diperlukan). Baris item dikenal pasti melalui
+//   Kod Item (12-20 digit); kuantiti, harga & amaun ikut kedudukan lajur pengepala; perihal di bawah baris kod.
+//   Setiap baris dipadankan dengan Stok Induk (padanan kabur + padanan yang diingati daripada PO terdahulu).
+// ------------------------------------------
+const PDFJS_VERSION = '3.11.174';
+let pdfJsLoading = null;
+let poImport = null; // { header, rows: [...] } semasa semakan
+
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfJsLoading) return pdfJsLoading;
+  pdfJsLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.min.js`;
+    s.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.js`;
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = () => { pdfJsLoading = null; reject(new Error('Gagal memuat pembaca PDF. Semak sambungan internet.')); };
+    document.head.appendChild(s);
+  });
+  return pdfJsLoading;
+}
+
+// Token teks setiap halaman: { x, y (dari atas), w, s }
+async function extractPdfTokens(file) {
+  const pdfjs = await loadPdfJs();
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const pages = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    pages.push(tc.items.filter(t => t.str && t.str.trim()).map(t => ({
+      x: t.transform[4], y: vp.height - t.transform[5], w: t.width, s: t.str.replace(/\s+/g, ' ').trim()
+    })));
+  }
+  return pages;
+}
+
+const PO_MONEY_RE = /^[\d,]+\.\d{2}$/;
+
+function parseMoney(s) {
+  return parseFloat(String(s || '').replace(/,/g, '')) || 0;
+}
+
+// Baca PO ePerolehan daripada token. Pulangkan { header, rows, total } atau buang ralat jika format tidak dikenali.
+function parseEPerolehanPO(pages) {
+  const all = pages.flat();
+  const find = (re, list = all) => list.find(t => re.test(t.s));
+  const sameRow = (a, b, tol = 3) => Math.abs(a.y - b.y) <= tol;
+  const rightOf = (label, re) => {
+    if (!label) return '';
+    const t = all.filter(x => sameRow(x, label) && x.x > label.x + label.w - 1 && (!re || re.test(x.s)) && x.s !== ':')
+      .sort((a, b) => a.x - b.x)[0];
+    return t ? t.s : '';
+  };
+
+  const first = pages[0] || [];
+  const poTok = find(/^PO\d{6,}$/, first);
+  if (!poTok) throw new Error('Format tidak dikenali: No. Dokumen PO tidak dijumpai. Fungsi ini untuk PDF Pesanan Kerajaan ePerolehan.');
+  const dateTok = first.find(t => sameRow(t, poTok) && /^\d{2}\/\d{2}\/\d{4}$/.test(t.s));
+  const toIso = (d) => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
+
+  // Pembekal: baris di lajur kiri antara "Tarikh Kuatkuasa Pendaftaran CBP" dan "No. Kontrak..."
+  const kuatkuasa = find(/^Tarikh Kuatkuasa Pendaftaran/i, first);
+  const kontrak = find(/^No\. Kontrak/i, first);
+  let pembekalNama = '', pembekalAlamat = '';
+  if (kuatkuasa && kontrak) {
+    const lines = first.filter(t => t.x < 130 && t.y > kuatkuasa.y + 3 && t.y < kontrak.y - 3)
+      .sort((a, b) => a.y - b.y || a.x - b.x).map(t => t.s);
+    pembekalNama = lines[0] || '';
+    pembekalAlamat = lines.slice(1).join(' ').replace(/\s+,/g, ',');
+  }
+  const header = {
+    no: poTok.s,
+    tarikh: toIso(dateTok && dateTok.s),
+    pembekalNama,
+    pembekalAlamat,
+    pembekalNoDaftar: rightOf(find(/^No\. Pendaftaran Perniagaan/i, first), /^[A-Z0-9-]{4,}$/),
+    tarikhBekal: toIso(rightOf(find(/^Pada atau sebelum/i, first), /^\d{2}\/\d{2}\/\d{4}$/)),
+    perihal: rightOf(find(/^Perihal\s*:?$/i))
+  };
+
+  const rows = [];
+  pages.forEach(tokens => {
+    const kuant = find(/^Kuantiti$/i, tokens);
+    const harga = find(/^Harga Seunit/i, tokens);
+    const amaun = find(/^Amaun$/i, tokens);
+    if (!kuant || !harga || !amaun) return;
+    const qtyMin = kuant.x - 20, hargaMin = harga.x - 15, amaunMin = amaun.x - 20;
+    const anchors = tokens.filter(t => /^\d{12,20}$/.test(t.s) && t.y > kuant.y && t.x > 250 && t.x < qtyMin).sort((a, b) => a.y - b.y);
+    const stop = tokens.filter(t => /^Jumlah/i.test(t.s) && t.y > kuant.y).map(t => t.y).sort((a, b) => a - b)[0] || Infinity;
+    anchors.forEach((a, i) => {
+      const top = a.y - 7;
+      const bottom = Math.min(i + 1 < anchors.length ? anchors[i + 1].y - 7 : Infinity, stop - 2);
+      const band = tokens.filter(t => t.y >= top && t.y < bottom);
+      const bil = band.find(t => /^\d{1,4}$/.test(t.s) && t.x < 30);
+      const qty = band.filter(t => /^\d+(\.\d+)?$/.test(t.s) && t.x >= qtyMin && t.x < hargaMin).sort((p, q) => p.y - q.y)[0];
+      const price = band.filter(t => PO_MONEY_RE.test(t.s) && t.x >= hargaMin && t.x < amaunMin)[0];
+      const amt = band.filter(t => PO_MONEY_RE.test(t.s) && t.x >= amaunMin)[0];
+      const desc = band.filter(t => t !== bil && t.y > a.y + 4 && t.x < qtyMin && !/^\d{6,}$/.test(t.s) && !(t.x < 30 && /^\d{1,4}$/.test(t.s)))
+        .sort((p, q) => p.y - q.y || p.x - q.x).map(t => t.s).join(' ').trim();
+      rows.push({
+        bil: bil ? parseInt(bil.s) : rows.length + 1,
+        kodItem: a.s,
+        perihal: desc,
+        qty: qty ? parseFloat(qty.s) : 0,
+        harga: price ? parseMoney(price.s) : 0,
+        amaun: amt ? parseMoney(amt.s) : 0
+      });
+    });
+  });
+  if (rows.length === 0) throw new Error('Tiada baris item dijumpai dalam PDF ini.');
+  const totalTok = find(/^Jumlah Keseluruhan/i);
+  const total = totalTok ? parseMoney(rightOf(totalTok, PO_MONEY_RE)) : rows.reduce((s, r) => s + r.amaun, 0);
+  return { header, rows: rows.sort((p, q) => p.bil - q.bil), total };
+}
+
+// ---- Padanan nama PO dengan Stok Induk ----
+const MATCH_STOPWORDS = new Set(['BRAND', 'JENAMA', 'THE', 'OF', 'FOR', 'AND', 'WITH', 'DAN', 'UNTUK', 'SIZE', 'SAIZ', 'X', 'PER', 'NO', 'TYPE', 'JENIS']);
+const MATCH_SIZE_ALIAS = { SMALL: 'S', MEDIUM: 'M', MED: 'M', LARGE: 'L', XSMALL: 'XS', XLARGE: 'XL', KECIL: 'S', SEDERHANA: 'M', BESAR: 'L' };
+const MATCH_SIZES = new Set(['XS', 'S', 'M', 'L', 'XL', 'XXL']);
+
+function matchTokens(s) {
+  return String(s || '').toUpperCase()
+    .replace(/(\d)\s*['’`]?\s*S\b/g, '$1S')        // 100'S -> 100S
+    .replace(/(\d)\s+(MM|CM|ML|M|L|G|MG|YD|PCS|S)\b/g, '$1$2') // 25 MM -> 25MM
+    .replace(/[^A-Z0-9.]+/g, ' ')
+    .split(' ')
+    .map(t => t.replace(/^\.+|\.+$/g, ''))
+    .map(t => MATCH_SIZE_ALIAS[t] || t)
+    .filter(t => t && !MATCH_STOPWORDS.has(t));
+}
+
+function matchKey(s) {
+  return matchTokens(s).join(' ');
+}
+
+function bigramDice(a, b) {
+  const grams = (s) => { const g = new Map(); for (let i = 0; i < s.length - 1; i++) { const k = s.slice(i, i + 2); g.set(k, (g.get(k) || 0) + 1); } return g; };
+  const ga = grams(a), gb = grams(b);
+  let inter = 0;
+  ga.forEach((n, k) => { inter += Math.min(n, gb.get(k) || 0); });
+  const total = (a.length - 1) + (b.length - 1);
+  return total > 0 ? (2 * inter) / total : 0;
+}
+
+function numParts(t) {
+  const m = /^(\d+(?:\.\d+)?)([A-Z]*)$/.exec(t);
+  return m ? { n: parseFloat(m[1]), u: m[2] } : null;
+}
+
+function tokenSim(a, b) {
+  if (a === b) return 1;
+  const na = numParts(a), nb = numParts(b);
+  if (na || nb) return na && nb && na.n === nb.n && (!na.u || !nb.u) ? 0.9 : 0; // "15" ~ "15MM"
+  if (/\d/.test(a) || /\d/.test(b) || a.length < 4 || b.length < 4) return 0;
+  const d = bigramDice(a, b);
+  return d >= 0.7 ? d : 0; // ejaan hampir sama: HYPODERMIX ~ HYPODERMIC
+}
+
+// Skor 0..1 antara perihal PO dan nama item.
+// Perihal PO biasanya lebih panjang (jenama, "100'S/BOX", dsb.), jadi skor lebih mementingkan
+// sejauh mana perkataan dalam nama Stok Induk terdapat dalam perihal PO (70%) berbanding sebaliknya (30%).
+function matchScore(poText, itemText) {
+  const A = matchTokens(poText), B = matchTokens(itemText);
+  if (!A.length || !B.length) return 0;
+  const best = (t, list) => list.reduce((m, u) => Math.max(m, tokenSim(t, u)), 0);
+  const coverA = A.reduce((s, t) => s + best(t, B), 0) / A.length;
+  const coverB = B.reduce((s, t) => s + best(t, A), 0) / B.length;
+  let score = 0.7 * coverB + 0.3 * coverA;
+  // Saiz berbeza (S/M/L) = item berbeza
+  const sizeA = A.filter(t => MATCH_SIZES.has(t)), sizeB = B.filter(t => MATCH_SIZES.has(t));
+  if (sizeA.length && sizeB.length && !sizeA.some(s => sizeB.includes(s))) score *= 0.25;
+  // Nombor dalam nama item (cth 31MM) yang tiada dalam PO menandakan item lain (maksimum 2 kali)
+  B.filter(t => /\d/.test(t) && best(t, A) === 0).slice(0, 2).forEach(() => { score *= 0.6; });
+  return Math.min(1, score);
+}
+
+// Tahap keyakinan padanan
+const PO_MATCH_HIGH = 0.75;
+const PO_MATCH_MIN = 0.45;
+
+// Calon padanan bagi satu baris PO: [{ item, score, remembered }]
+function poMatchCandidates(perihal, limit = 5) {
+  const key = matchKey(perihal);
+  return items.map(i => {
+    const remembered = Array.isArray(i.namaPO) && i.namaPO.includes(key);
+    return { item: i, remembered, score: remembered ? 1 : matchScore(perihal, i.nama) };
+  }).filter(c => c.score > 0.1).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// Teka unit daripada perihal: "100'S/BOX" -> Box, "1L/BOTTLE" -> Bottle
+function guessUnitFromText(s) {
+  const t = String(s || '').toUpperCase();
+  const map = [[/\b(BOX|KOTAK)\b/, 'Box'], [/\b(BOTTLE|BOTOL)\b/, 'Bottle'], [/\b(PKT|PACK|PAKET)\b/, 'Pkt'], [/\bTUB\b/, 'Tub'],
+    [/\bROLL\b/, 'Roll'], [/\bREEL\b/, 'Reel'], [/\bTUBE\b/, 'Tube'], [/\bSET\b/, 'Set'], [/\bSYRINGE\b/, 'Syringe'], [/\bRIM\b/, 'Rim']];
+  const slash = /\/\s*([A-Z]+)/.exec(t); // unit selepas "/" diutamakan
+  if (slash) {
+    const hit = map.find(([re]) => re.test(slash[1]));
+    if (hit) return hit[1];
+    if (slash[1] === 'UNIT') return 'Unit';
+  }
+  const hit = map.find(([re]) => re.test(t));
+  return hit ? hit[1] : 'Unit';
+}
+
+// ---- Tetingkap semakan PO ----
+const PO_NEW = '__new';
+const PO_SKIP = '__skip';
+const PO_DEFAULT_CATEGORY = 'Bahan Pergigian (Bukan Kontrak)';
+
+async function onPoPdfSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (!file || !isAdminLoggedIn) return;
+  const token = showLoadingOverlay('Membaca PO daripada PDF...');
+  try {
+    const parsed = parseEPerolehanPO(await extractPdfTokens(file));
+    openPoImport(parsed, file.name);
+  } catch (err) {
+    showToast('Gagal membaca PO: ' + (err.message || err), 'error');
+  } finally {
+    hideLoadingOverlay(token);
+  }
+}
+
+// Cadangan SKU untuk item baharu: BARU-001, BARU-002, ...
+function nextNewSku(taken) {
+  let n = 0;
+  [...items.map(i => i.sku), ...taken].forEach(s => { const m = /^BARU-(\d+)$/i.exec(String(s || '')); if (m) n = Math.max(n, parseInt(m[1])); });
+  return `BARU-${String(n + 1).padStart(3, '0')}`;
+}
+
+function titleCaseName(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
+}
+
+function openPoImport(parsed, filename) {
+  const takenSkus = [];
+  const rows = parsed.rows.map(r => {
+    const candidates = poMatchCandidates(r.perihal);
+    const top = candidates[0];
+    const confidence = !top ? 'tiada' : top.remembered ? 'ingat' : top.score >= PO_MATCH_HIGH ? 'tinggi' : top.score >= PO_MATCH_MIN ? 'semak' : 'tiada';
+    const choice = confidence === 'tiada' ? PO_NEW : top.item.id;
+    const sku = nextNewSku(takenSkus);
+    if (choice === PO_NEW) takenSkus.push(sku);
+    return {
+      ...r, candidates, confidence, choice,
+      newItem: { sku, nama: titleCaseName(r.perihal), kategori: PO_DEFAULT_CATEGORY, unit: guessUnitFromText(r.perihal) }
+    };
+  });
+  poImport = { header: { ...parsed.header }, total: parsed.total, rows, filename };
+  renderPoImport();
+  document.getElementById('po-import-modal')?.classList.remove('hidden');
+}
+
+function closePoImport() {
+  document.getElementById('po-import-modal')?.classList.add('hidden');
+  poImport = null;
+}
+
+function setPoRowChoice(idx, value) {
+  const r = poImport && poImport.rows[idx];
+  if (!r) return;
+  r.choice = value;
+  if (value === PO_NEW) {
+    const taken = poImport.rows.filter((x, i) => i !== idx && x.choice === PO_NEW).map(x => x.newItem.sku);
+    if (taken.includes(r.newItem.sku) || items.some(i => i.sku === r.newItem.sku)) r.newItem.sku = nextNewSku(taken);
+  }
+  renderPoImport();
+}
+
+function setPoRowField(idx, field, value) {
+  const r = poImport && poImport.rows[idx];
+  if (!r) return;
+  if (field === 'qty') r.qty = Math.max(0, parseFloat(value) || 0);
+  else if (field === 'harga') r.harga = Math.max(0, parseFloat(value) || 0);
+  else r.newItem[field] = String(value || '');
+  if (field === 'qty' || field === 'harga') {
+    r.amaun = Math.round(r.qty * r.harga * 100) / 100;
+    const cell = document.getElementById(`po-row-amaun-${idx}`);
+    if (cell) cell.textContent = formatRM(r.amaun);
+    updatePoImportTotals();
+  }
+}
+
+function setPoHeaderField(field, value) {
+  if (!poImport) return;
+  poImport.header[field] = String(value || '');
+  if (field === 'pembekalNama') updatePoImportSupplierNote();
+}
+
+function updatePoImportSupplierNote() {
+  const el = document.getElementById('po-imp-pembekal-note');
+  if (!el || !poImport) return;
+  const exists = findPembekal(poImport.header.pembekalNama);
+  el.className = `text-[11px] font-bold mt-1 ${exists ? 'text-emerald-700' : 'text-amber-700'}`;
+  el.textContent = exists ? '✓ Sudah ada dalam Direktori Pembekal' : '+ Pembekal baharu: akan ditambah ke Direktori Pembekal';
+}
+
+function updatePoImportTotals() {
+  const el = document.getElementById('po-imp-total');
+  if (!el || !poImport) return;
+  const sum = poImport.rows.filter(r => r.choice !== PO_SKIP).reduce((s, r) => s + r.amaun, 0);
+  const ok = Math.abs(sum - poImport.total) < 0.01;
+  el.className = `font-bold ${ok ? 'text-emerald-700' : 'text-amber-700'}`;
+  el.textContent = `Jumlah PO: RM ${formatRM(poImport.total)} · Jumlah baris disimpan: RM ${formatRM(sum)} ${ok ? '✓ sepadan' : '⚠ berbeza'}`;
+}
+
+const PO_CONF_BADGE = {
+  ingat: '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800 whitespace-nowrap">✓ Diingati</span>',
+  tinggi: '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 whitespace-nowrap">✓ Padanan tinggi</span>',
+  semak: '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 whitespace-nowrap">⚠ Sila semak</span>',
+  tiada: '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 whitespace-nowrap">Tiada padanan</span>'
+};
+
+function renderPoImport() {
+  const body = document.getElementById('po-import-body');
+  const p = poImport;
+  if (!body || !p) return;
+  const h = p.header;
+  const sub = document.getElementById('po-import-subtitle');
+  if (sub) sub.textContent = `${p.filename} · ${p.rows.length} baris item. Semak padanan setiap baris; baris "Perlu semak" dan "Tiada padanan" ditanda warna.`;
+
+  const input = 'w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500';
+  const counts = { ingat: 0, tinggi: 0, semak: 0, tiada: 0 };
+  p.rows.forEach(r => { counts[r.confidence]++; });
+  const allItemsOptions = [...items].sort((a, b) => String(a.nama).localeCompare(String(b.nama)))
+    .map(i => `<option value="${escapeHtml(i.id)}">[${escapeHtml(i.sku)}] ${escapeHtml(i.nama)}</option>`).join('');
+  const catOptions = (cur) => Object.keys(subcategories).map(c => `<option value="${escapeHtml(c)}"${c === cur ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  const unitOptions = (cur) => [...new Set([...packagingUnits, cur])].filter(Boolean).map(u => `<option value="${escapeHtml(u)}"${u === cur ? ' selected' : ''}>${escapeHtml(u)}</option>`).join('');
+
+  const rowsHtml = p.rows.map((r, idx) => {
+    const rowTone = r.choice === PO_SKIP ? 'bg-slate-50 opacity-60' : r.confidence === 'semak' ? 'bg-amber-50/60' : r.confidence === 'tiada' ? 'bg-rose-50/50' : '';
+    const candOptions = r.candidates.map(c =>
+      `<option value="${escapeHtml(c.item.id)}">${c.remembered ? '★' : Math.round(c.score * 100) + '%'} · [${escapeHtml(c.item.sku)}] ${escapeHtml(c.item.nama)}</option>`).join('');
+    const select = `
+      <select onchange="setPoRowChoice(${idx}, this.value)" class="${input}">
+        ${candOptions ? `<optgroup label="Cadangan padanan">${candOptions}</optgroup>` : ''}
+        <option value="${PO_NEW}">➕ Daftar sebagai item baharu</option>
+        <option value="${PO_SKIP}">✕ Abaikan baris ini</option>
+        <optgroup label="Semua item Stok Induk">${allItemsOptions}</optgroup>
+      </select>`;
+    const newBox = r.choice !== PO_NEW ? '' : `
+      <tr class="${rowTone}">
+        <td></td>
+        <td colspan="5" class="pb-3 px-2">
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 bg-white border border-emerald-200 rounded-xl p-2">
+            <label class="font-bold text-slate-600 text-[10px]">SKU / Kod <input type="text" value="${escapeHtml(r.newItem.sku)}" oninput="setPoRowField(${idx}, 'sku', this.value)" class="${input} mt-0.5"></label>
+            <label class="font-bold text-slate-600 text-[10px] col-span-2 lg:col-span-1">Nama item <input type="text" value="${escapeHtml(r.newItem.nama)}" oninput="setPoRowField(${idx}, 'nama', this.value)" class="${input} mt-0.5"></label>
+            <label class="font-bold text-slate-600 text-[10px]">Kategori <select onchange="setPoRowField(${idx}, 'kategori', this.value)" class="${input} mt-0.5">${catOptions(r.newItem.kategori)}</select></label>
+            <label class="font-bold text-slate-600 text-[10px]">Unit <select onchange="setPoRowField(${idx}, 'unit', this.value)" class="${input} mt-0.5">${unitOptions(r.newItem.unit)}</select></label>
+          </div>
+        </td>
+      </tr>`;
+    return `
+      <tr class="${rowTone} ${r.choice === PO_NEW ? '' : 'border-b border-slate-100'} align-top">
+        <td class="p-2 text-center font-bold text-slate-500">${r.bil}</td>
+        <td class="p-2">
+          <p class="font-bold text-slate-800">${escapeHtml(r.perihal)}</p>
+          <p class="text-[10px] text-slate-400">Kod Item: ${escapeHtml(r.kodItem)}</p>
+        </td>
+        <td class="p-2 w-20"><input type="number" min="0" step="any" value="${r.qty}" oninput="setPoRowField(${idx}, 'qty', this.value)" class="${input} text-center"></td>
+        <td class="p-2 w-24"><input type="number" min="0" step="0.01" value="${r.harga.toFixed(2)}" oninput="setPoRowField(${idx}, 'harga', this.value)" class="${input} text-right"></td>
+        <td id="po-row-amaun-${idx}" class="p-2 text-right font-bold whitespace-nowrap">${formatRM(r.amaun)}</td>
+        <td class="p-2 min-w-[18rem]">
+          <div class="mb-1">${r.choice === PO_NEW ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-600 text-white">➕ Item baharu</span>' : r.choice === PO_SKIP ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-300 text-slate-700">Diabaikan</span>' : PO_CONF_BADGE[r.confidence]}</div>
+          ${select}
+        </td>
+      </tr>${newBox}`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50 border border-slate-200 rounded-2xl p-3">
+      <label class="font-bold text-slate-600 text-[11px]">No. LPO / PO <input type="text" value="${escapeHtml(h.no)}" oninput="setPoHeaderField('no', this.value)" class="${input} mt-0.5"></label>
+      <label class="font-bold text-slate-600 text-[11px]">Tarikh PO <input type="date" value="${escapeHtml(h.tarikh)}" oninput="setPoHeaderField('tarikh', this.value)" class="${input} mt-0.5"></label>
+      <label class="font-bold text-slate-600 text-[11px] sm:col-span-2">Pembekal
+        <input type="text" list="po-imp-pembekal-list" value="${escapeHtml(h.pembekalNama)}" oninput="setPoHeaderField('pembekalNama', this.value)" class="${input} mt-0.5">
+        <datalist id="po-imp-pembekal-list">${sortedPembekal().map(s => `<option value="${escapeHtml(s.nama)}"></option>`).join('')}</datalist>
+        <p id="po-imp-pembekal-note"></p>
+      </label>
+      <div class="sm:col-span-2 lg:col-span-4 text-[11px] text-slate-600 space-y-0.5">
+        ${h.perihal ? `<p><b>Perihal:</b> ${escapeHtml(h.perihal)}</p>` : ''}
+        ${h.tarikhBekal ? `<p><b>Bekal sebelum:</b> ${escapeHtml(formatDate(h.tarikhBekal))}${h.pembekalNoDaftar ? ` · <b>No. Pendaftaran:</b> ${escapeHtml(h.pembekalNoDaftar)}` : ''}</p>` : ''}
+        <p id="po-imp-total"></p>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-2 text-[11px] font-bold">
+      ${counts.ingat ? `<span class="bg-purple-100 text-purple-800 px-2.5 py-1 rounded-full">★ ${counts.ingat} diingati daripada PO terdahulu</span>` : ''}
+      <span class="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full">✓ ${counts.tinggi} padanan tinggi</span>
+      <span class="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-full">⚠ ${counts.semak} perlu semak</span>
+      <span class="bg-rose-100 text-rose-800 px-2.5 py-1 rounded-full">${counts.tiada} tiada padanan (cadangan: item baharu)</span>
+    </div>
+    <div class="overflow-x-auto border border-slate-200 rounded-xl">
+      <table class="w-full text-left border-collapse">
+        <thead>
+          <tr class="bg-slate-900 text-amber-400 font-bold uppercase text-[10px]">
+            <th class="p-2 text-center">Bil</th><th class="p-2">Perihal dalam PO</th><th class="p-2 text-center">Kuantiti</th>
+            <th class="p-2 text-right">Harga Seunit</th><th class="p-2 text-right">Amaun</th><th class="p-2">Padanan Stok Induk</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p class="text-[11px] text-slate-500"><i class="fa-solid fa-circle-info mr-1"></i>Padanan yang anda sahkan akan <b>diingati</b>: PO akan datang dengan perihal yang sama dipadankan secara automatik. Item baharu didaftarkan dengan baki 0; baki bertambah apabila LPO disahkan terima (BTB).</p>`;
+
+  // Tetapkan pilihan semasa setiap baris (selepas HTML dibina)
+  body.querySelectorAll('tbody select[onchange^="setPoRowChoice"]').forEach((sel, i) => { sel.value = p.rows[i].choice; });
+  updatePoImportSupplierNote();
+  updatePoImportTotals();
+}
+
+async function savePoImport() {
+  const p = poImport;
+  if (!p || !isAdminLoggedIn) return;
+  const h = p.header;
+  const no = String(h.no || '').trim();
+  const pembekal = String(h.pembekalNama || '').trim();
+  if (!no || !pembekal || !h.tarikh) {
+    showToast('Sila lengkapkan No. LPO, Tarikh dan Pembekal.', 'error');
+    return;
+  }
+  if (lpoList.some(l => String(l.no).trim().toLowerCase() === no.toLowerCase())) {
+    showToast(`No. LPO ${no} telah wujud. PO ini mungkin sudah didaftarkan.`, 'error');
+    return;
+  }
+  const rows = p.rows.filter(r => r.choice !== PO_SKIP);
+  if (rows.length === 0) {
+    showToast('Tiada baris untuk disimpan.', 'error');
+    return;
+  }
+  const badQty = rows.find(r => !(r.qty > 0) || !Number.isInteger(r.qty));
+  if (badQty) {
+    showToast(`Kuantiti baris ${badQty.bil} mesti nombor bulat lebih daripada 0.`, 'error');
+    return;
+  }
+  const newRows = rows.filter(r => r.choice === PO_NEW);
+  const skus = newRows.map(r => r.newItem.sku.trim().toUpperCase());
+  const badNew = newRows.find(r => !r.newItem.sku.trim() || !r.newItem.nama.trim());
+  if (badNew) {
+    showToast(`Sila isi SKU dan Nama bagi item baharu (baris ${badNew.bil}).`, 'error');
+    return;
+  }
+  const dupSku = skus.find((s, i) => skus.indexOf(s) !== i || items.some(it => String(it.sku).toUpperCase() === s));
+  if (dupSku) {
+    showToast(`SKU ${dupSku} telah digunakan. Sila tukar SKU item baharu.`, 'error');
+    return;
+  }
+  const updatePrice = !!document.getElementById('po-import-update-price')?.checked;
+
+  const token = showLoadingOverlay(`Mendaftar PO ${no}...`);
+  try {
+    const lpoRef = db.collection('kraipro_lpo').doc();
+    const now = new Date().toISOString();
+    let newSupplier = false;
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(stateDocRef());
+      const data = snap.exists ? snap.data() : {};
+      const freshItems = Array.isArray(data.items) ? data.items : JSON.parse(JSON.stringify(items));
+      const freshPembekal = Array.isArray(data.pembekalList) ? data.pembekalList : JSON.parse(JSON.stringify(pembekalList));
+
+      const lines = rows.map((r, idx) => {
+        const key = matchKey(r.perihal);
+        let it;
+        if (r.choice === PO_NEW) {
+          it = {
+            id: `${Date.now()}${idx}`, sku: r.newItem.sku.trim().toUpperCase(), nama: r.newItem.nama.trim(),
+            kategori: r.newItem.kategori, subkategori: '', unit: r.newItem.unit || 'Unit', harga: r.harga,
+            reorder: 0, paraMin: 0, paraMaks: 0, baki: 0, namaPO: [key]
+          };
+          freshItems.push(it);
+        } else {
+          it = freshItems.find(x => String(x.id) === String(r.choice));
+          if (!it) throw new Error(`Item bagi baris ${r.bil} tidak dijumpai dalam Stok Induk.`);
+          if (updatePrice && r.harga > 0) it.harga = r.harga;
+          // Ingat padanan ini untuk PO akan datang
+          const known = Array.isArray(it.namaPO) ? it.namaPO : [];
+          if (key && !known.includes(key)) it.namaPO = [...known, key].slice(-20);
+        }
+        return { itemId: String(it.id), sku: it.sku, nama: it.nama, unit: it.unit || 'Unit', qty: r.qty, harga: r.harga, perihalPO: r.perihal, kodItemPO: r.kodItem };
+      });
+
+      if (!freshPembekal.some(s => String(s.nama || '').trim().toLowerCase() === pembekal.toLowerCase())) {
+        freshPembekal.push({ id: String(Date.now()), nama: pembekal, telefon: '', email: '', alamat: h.pembekalAlamat || '', noPendaftaran: h.pembekalNoDaftar || '' });
+        newSupplier = true;
+      }
+
+      tx.set(stateDocRef(), { items: freshItems, pembekalList: freshPembekal, lastUpdated: now }, { merge: true });
+      tx.set(lpoRef, {
+        id: lpoRef.id, no, pembekal, tarikh: h.tarikh, status: 'Dalam Proses', items: lines,
+        createdAt: now, dibuatOleh: currentUserEmail, sumber: 'PDF ePerolehan',
+        perihalPO: h.perihal || '', tarikhBekal: h.tarikhBekal || '', jumlahPO: p.total
+      });
+    });
+    addAuditLog('Pesanan LPO (PDF)', `PO ${no} (${pembekal}) didaftarkan daripada PDF: ${rows.length} baris, ${newRows.length} item baharu${newSupplier ? ', pembekal baharu' : ''}.`);
+    closePoImport();
+    showToast(`${no} didaftarkan (${rows.length} item${newRows.length ? `, ${newRows.length} item baharu` : ''}). Sahkan terima apabila barang sampai.`, 'success');
+  } catch (err) {
+    showToast('Gagal mendaftar PO: ' + authErrorMessage(err), 'error');
+  } finally {
+    hideLoadingOverlay(token);
+  }
+}
+
 // ---- KEW.PS-1: Borang Terimaan Barang-Barang (BTB) ----
 const BTB_JENIS_PENERIMAAN = ['Pembelian', 'Kontrak', 'Pindahan', 'Hadiah / Sumbangan', 'Pulangan', 'Lain-lain'];
 const DEFAULT_JABATAN = 'PERKHIDMATAN PERGIGIAN DAERAH KUALA KRAI';
@@ -4598,7 +5225,8 @@ function confirmLpoReceipt(lpoId) {
 
   const rows = (lpo.items || []).map((i, idx) => {
     const inv = findInventoryItem(i);
-    const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
+    // Harga ikut PO jika direkod (LPO daripada PDF), jika tidak ikut Stok Induk
+    const harga = i.harga !== undefined && i.harga !== null && i.harga !== '' ? (parseFloat(i.harga) || 0) : (inv ? (parseFloat(inv.harga) || 0) : 0);
     const qty = toInt(i.qty);
     return `
       <tr class="border-b border-slate-100" data-idx="${idx}">
@@ -5324,7 +5952,10 @@ const KLINIK_LOG_STYLE = {
   terima: { label: 'Terima', cls: 'bg-emerald-100 text-emerald-800', icon: 'fa-truck-ramp-box', sign: '+' },
   keluar: { label: 'Keluar', cls: 'bg-purple-100 text-purple-800', icon: 'fa-arrow-right-from-bracket', sign: '−' },
   baki_awal: { label: 'Baki Awal', cls: 'bg-amber-100 text-amber-800', icon: 'fa-clipboard-list', sign: '' },
-  pelarasan: { label: 'Pelarasan', cls: 'bg-rose-100 text-rose-800', icon: 'fa-scale-balanced', sign: '−' }
+  pelarasan: { label: 'Pelarasan', cls: 'bg-rose-100 text-rose-800', icon: 'fa-scale-balanced', sign: '−' },
+  pindah_keluar: { label: 'Pindah Keluar', cls: 'bg-sky-100 text-sky-800', icon: 'fa-right-from-bracket', sign: '−' },
+  pindah_masuk: { label: 'Pindah Masuk', cls: 'bg-teal-100 text-teal-800', icon: 'fa-right-to-bracket', sign: '+' },
+  pindah_batal: { label: 'Pindahan Dibatalkan', cls: 'bg-slate-200 text-slate-700', icon: 'fa-rotate-left', sign: '+' }
 };
 
 function resetKlinikState() {
@@ -5337,6 +5968,9 @@ function resetKlinikState() {
   klinikSetupDraft = {};
   klinikSetupCat = '';
   klinikStockCat = '';
+  pindahanSources = { all: [], out: [], in: [] };
+  pindahanList = [];
+  klinikPindahDraft = {};
   adminKlinikMonth = '';
   adminKlinikSelected = '';
 }
@@ -5362,10 +5996,39 @@ function klinikDocFor(unit) {
   return klinikDocs.find(k => k.unit === unit) || null;
 }
 
+// Unit penggunaan klinik bagi item stok induk.
+//   unit      : unit yang digunakan di klinik (cth: Paket)
+//   faktor    : bilangan unit klinik dalam 1 unit stor daerah (cth: 1 Box = 5 Paket)
+//   storeUnit : unit stor daerah (cth: Box)
+function klinikUnitOf(itemId, sku) {
+  const inv = items.find(i => String(i.id) === String(itemId)) || (sku ? items.find(i => i.sku === sku) : null);
+  if (!inv) return { inv: null, unit: '', faktor: 1, storeUnit: '' };
+  const faktor = inv.unitKlinik ? Math.max(1, toInt(inv.faktorKlinik) || 1) : 1;
+  return { inv, unit: inv.unitKlinik || inv.unit || '', faktor, storeUnit: inv.unit || '' };
+}
+
+// Kuantiti klinik berserta pecahan unit stor: "7 Paket (1 Box + 2 Paket)"
+function formatKlinikQty(qty, itemId, sku) {
+  const u = klinikUnitOf(itemId, sku);
+  const n = toInt(qty);
+  if (u.faktor <= 1) return `${n} ${u.unit}`.trim();
+  const whole = Math.floor(Math.abs(n) / u.faktor);
+  const rest = Math.abs(n) % u.faktor;
+  const parts = [whole ? `${whole} ${u.storeUnit}` : '', rest ? `${rest} ${u.unit}` : ''].filter(Boolean).join(' + ');
+  return `${n} ${u.unit}${n && whole ? ` (${parts})` : ''}`;
+}
+
+// Baki klinik disimpan bersama faktor ketika ia ditulis; jika SuperAdmin menukar unit klinik
+// dalam Stok Induk (cth: dari Box ke Paket), baki ditukar secara automatik semasa dibaca.
 function sanitizeKlinik(d) {
   const out = {};
   Object.entries(d.items && typeof d.items === 'object' ? d.items : {}).forEach(([id, it]) => {
-    if (it && typeof it === 'object') out[id] = { ...it, baki: toInt(it.baki) };
+    if (!it || typeof it !== 'object') return;
+    const u = klinikUnitOf(id, it.sku);
+    const oldF = Math.max(1, toInt(it.faktor) || 1);
+    let baki = toInt(it.baki);
+    if (u.inv && oldF !== u.faktor) baki = Math.round(baki * u.faktor / oldF);
+    out[id] = { ...it, baki, faktor: u.inv ? u.faktor : oldF, unitBungkus: u.inv ? u.unit : (it.unitBungkus || '') };
   });
   return { ...d, unit: String(d.unit || ''), items: out };
 }
@@ -5408,6 +6071,9 @@ function renderKlinikAll() {
   renderKlinikView();
   renderAdminKlinik();
   renderDaftarPanels();
+  // Baki & penggunaan klinik dipaparkan dalam borang permohonan
+  renderReqItemPreview();
+  renderDraftTable();
 }
 
 function startKlinikListeners() {
@@ -5416,8 +6082,9 @@ function startKlinikListeners() {
       klinikDocs = qs.docs.map(d => sanitizeKlinik({ ...d.data(), id: d.id }));
       renderKlinikAll();
     }, onFirestoreError('stor klinik')));
-  } else if (isKlinikPenjaga()) {
-    firestoreUnsubscribers.push(klinikRef(myKlinikUnit()).onSnapshot((snap) => {
+  } else if (currentUserProfile && currentUserProfile.unit) {
+    // Penjaga: urus stor klinik sendiri. Staf lain: baca sahaja (baki & penggunaan semasa memohon)
+    firestoreUnsubscribers.push(klinikRef(currentUserProfile.unit).onSnapshot((snap) => {
       klinikDocs = snap.exists ? [sanitizeKlinik({ ...snap.data(), id: snap.id })] : [];
       renderKlinikAll();
     }, onFirestoreError('stor klinik')));
@@ -5435,6 +6102,7 @@ function startKlinikListeners() {
   }
 
   subscribeKlinikLogs();
+  startPindahanListeners();
 }
 
 // Log satu bulan sahaja (jimat bacaan): pentadbir = semua klinik bagi bulan dipilih; penjaga = klinik sendiri bulan ini
@@ -5471,17 +6139,20 @@ function renderKlinikView() {
   setText('klinik-stat-keluar', keluarTotal);
   setText('klinik-stat-habis', list.filter(i => i.baki <= 0).length);
 
+  const waiting = klinikPendingReceipts.length + klinikIncomingPindahan().length;
   const badge = document.getElementById('main-tab-klinik-badge');
   if (badge) {
-    badge.textContent = klinikPendingReceipts.length;
-    badge.classList.toggle('hidden', klinikPendingReceipts.length === 0);
+    badge.textContent = waiting;
+    badge.classList.toggle('hidden', waiting === 0);
   }
 
   document.getElementById('klinik-setup-card')?.classList.toggle('hidden', locked);
   document.getElementById('klinik-stock-card')?.classList.toggle('hidden', !locked);
   if (!locked) renderKlinikSetupList();
   renderKlinikReceipts();
+  renderKlinikPindahMasuk();
   renderKlinikStockList();
+  renderKlinikPindahan();
   renderKlinikHistory();
 }
 
@@ -5514,11 +6185,13 @@ function renderKlinikSetupList() {
       .sort((a, b) => String(a.nama).localeCompare(String(b.nama)))
       .map(i => {
         const v = klinikSetupDraft[String(i.id)];
+        const u = klinikUnitOf(i.id, i.sku);
         return `
         <div class="flex items-center gap-3 rounded-xl px-3 py-2 ${v ? 'bg-purple-50 border border-purple-200' : 'bg-slate-50 border border-transparent'}">
+          ${itemThumbHtml(i.id, 'w-11 h-11')}
           <div class="min-w-0 flex-1">
             <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(i.nama)}</p>
-            <p class="text-[11px] text-slate-500">${escapeHtml(i.sku)} · ${escapeHtml(i.unit || '')}</p>
+            <p class="text-[11px] text-slate-500">${escapeHtml(i.sku)} · Kira dalam <b class="text-purple-700">${escapeHtml(u.unit)}</b>${u.faktor > 1 ? ` (1 ${escapeHtml(u.storeUnit)} = ${u.faktor} ${escapeHtml(u.unit)})` : ''}</p>
           </div>
           <input type="number" min="0" inputmode="numeric" placeholder="0" data-id="${escapeHtml(i.id)}" value="${v ? v : ''}"
             oninput="setKlinikSetupQty(this.dataset.id, this.value)" aria-label="Baki awal ${escapeHtml(i.nama)}"
@@ -5568,8 +6241,9 @@ function saveKlinikBakiAwal() {
       const logItems = [];
       entries.forEach(({ inv, qty }) => {
         const id = String(inv.id);
-        itemsMap[id] = { sku: inv.sku || '', nama: inv.nama || '', unitBungkus: inv.unit || '', kategori: inv.kategori || '', baki: qty };
-        logItems.push({ itemId: id, sku: inv.sku || '', nama: inv.nama || '', unit: inv.unit || '', qty, bakiSelepas: qty });
+        const u = klinikUnitOf(id, inv.sku);
+        itemsMap[id] = { sku: inv.sku || '', nama: inv.nama || '', unitBungkus: u.unit, faktor: u.faktor, kategori: inv.kategori || '', baki: qty };
+        logItems.push({ itemId: id, sku: inv.sku || '', nama: inv.nama || '', unit: u.unit, qty, bakiSelepas: qty });
       });
       const now = new Date().toISOString();
       await db.runTransaction(async (tx) => {
@@ -5594,7 +6268,7 @@ function renderKlinikReceipts() {
   const card = document.getElementById('klinik-receipts-card');
   const box = document.getElementById('klinik-receipts-list');
   if (!card || !box) return;
-  card.classList.toggle('hidden', klinikPendingReceipts.length === 0);
+  card.classList.toggle('hidden', klinikPendingReceipts.length + klinikIncomingPindahan().length === 0);
   if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
 
   const doc = klinikDocFor(myKlinikUnit());
@@ -5608,14 +6282,14 @@ function renderKlinikReceipts() {
           <p class="text-[11px] text-slate-500">Diluluskan ${escapeHtml(formatDate(r.tarikhLulus))} · Pemohon: ${escapeHtml(r.nama)}</p>
         </div>
         ${lines.map(({ i, idx }) => {
-          const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+          const u = klinikUnitOf(i.itemId, i.sku);
           return `
           <div class="flex items-center gap-3 bg-slate-50 rounded-xl px-3 py-2">
             <div class="min-w-0 flex-1">
               <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(i.nama)}</p>
-              <p class="text-[11px] text-slate-500">Diluluskan: <b>${toInt(i.qtyLulus)}</b> ${escapeHtml((inv && inv.unit) || '')}</p>
+              <p class="text-[11px] text-slate-500">Diluluskan: <b>${toInt(i.qtyLulus)}</b> ${escapeHtml(u.storeUnit)}${u.faktor > 1 ? ` <span class="text-purple-700 font-bold">= ${toInt(i.qtyLulus) * u.faktor} ${escapeHtml(u.unit)}</span>` : ''}</p>
             </div>
-            <label class="text-[10px] font-bold text-slate-500 text-center shrink-0">Diterima
+            <label class="text-[10px] font-bold text-slate-500 text-center shrink-0">Diterima (${escapeHtml(u.storeUnit || 'unit')})
               <input type="number" min="0" max="${toInt(i.qtyLulus)}" inputmode="numeric" id="klinik-terima-${escapeHtml(r.id)}-${idx}" value="${toInt(i.qtyLulus)}"
                 class="block w-20 mt-0.5 bg-white border border-slate-300 rounded-xl px-2 py-2 text-center text-sm font-extrabold text-slate-900 focus:ring-2 focus:ring-emerald-500">
             </label>
@@ -5665,16 +6339,19 @@ function confirmKlinikReceipt(reqId) {
         const kItems = sanitizeKlinik(kSnap.data()).items;
         const changes = {};
         const logItems = [];
+        // terimaKlinikQty direkod dalam unit stor daerah (sepadan dengan KEW.PS-8);
+        // stok klinik ditambah dalam unit klinik (kuantiti × faktor)
         const terimaQty = (r.items || []).map((i, idx) => {
           const qty = toInt(qtyByIdx[idx]);
           if (qty <= 0) return 0;
-          const inv = items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
           const id = klinikItemKey(i);
+          const u = klinikUnitOf(id, i.sku);
+          const qtyKlinik = qty * u.faktor;
           const cur = changes[id] || kItems[id] || {
-            sku: i.sku || '', nama: i.nama || (inv && inv.nama) || '', unitBungkus: (inv && inv.unit) || '', kategori: i.kategori || (inv && inv.kategori) || '', baki: 0
+            sku: i.sku || '', nama: i.nama || (u.inv && u.inv.nama) || '', unitBungkus: u.unit, faktor: u.faktor, kategori: i.kategori || (u.inv && u.inv.kategori) || '', baki: 0
           };
-          changes[id] = { ...cur, baki: toInt(cur.baki) + qty };
-          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: changes[id].baki });
+          changes[id] = { ...cur, baki: toInt(cur.baki) + qtyKlinik };
+          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty: qtyKlinik, bakiSelepas: changes[id].baki });
           return qty;
         });
 
@@ -5707,9 +6384,9 @@ function applyKlinikReversal(tx, klinikSnap, r) {
   const changes = {};
   const logItems = [];
   (r.items || []).forEach((i, idx) => {
-    const qty = toInt(qtys[idx]);
-    if (qty <= 0) return;
     const id = klinikItemKey(i);
+    const qty = toInt(qtys[idx]) * klinikUnitOf(id, i.sku).faktor; // unit stor -> unit klinik
+    if (qty <= 0) return;
     const cur = changes[id] || kItems[id];
     if (!cur) return;
     const baki = Math.max(0, toInt(cur.baki) - qty);
@@ -5751,19 +6428,21 @@ function renderKlinikStockList() {
     const qty = Math.min(Math.max(1, toInt(klinikDraftQty[it.id]) || 1), Math.max(1, it.baki));
     return `
       <div class="flex items-center gap-3 border border-slate-200 rounded-2xl p-3 ${habis ? 'bg-slate-50' : 'bg-white'}">
+        ${itemThumbHtml(it.id, 'w-14 h-14')}
         <div class="min-w-0 flex-1">
           <p class="text-sm font-extrabold ${habis ? 'text-slate-400' : 'text-slate-900'} leading-snug">${escapeHtml(it.nama)}</p>
           <p class="text-[11px] text-slate-400">${escapeHtml(it.sku)}</p>
-          <p class="text-xs font-extrabold mt-1 ${habis ? 'text-rose-600' : 'text-emerald-700'}">Baki: ${it.baki} ${escapeHtml(it.unitBungkus || '')}</p>
+          <p class="text-xs font-extrabold mt-1 ${habis ? 'text-rose-600' : 'text-emerald-700'}">Baki: ${escapeHtml(formatKlinikQty(it.baki, it.id, it.sku))}</p>
         </div>
         ${habis ? '<span class="shrink-0 text-xs font-black text-rose-600 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">Habis</span>' : `
         <div class="shrink-0 flex flex-col items-stretch gap-2 w-[8.5rem]">
           <div class="flex items-center justify-between bg-slate-100 rounded-xl">
             <button type="button" data-id="${id}" onclick="stepKlinikQty(this.dataset.id, -1)" aria-label="Kurangkan" class="w-10 h-10 text-xl font-black text-slate-600 rounded-xl active:bg-slate-200">−</button>
-            <input type="number" min="1" max="${it.baki}" inputmode="numeric" data-id="${id}" value="${qty}" onchange="setKlinikQty(this.dataset.id, this.value)" aria-label="Kuantiti keluar"
+            <input type="number" min="1" max="${it.baki}" inputmode="numeric" data-id="${id}" value="${qty}" onchange="setKlinikQty(this.dataset.id, this.value)" aria-label="Kuantiti keluar (${escapeHtml(it.unitBungkus || '')})" title="${escapeHtml(it.unitBungkus || '')}"
               class="w-12 h-10 bg-transparent text-center text-base font-extrabold text-slate-900 focus:outline-none">
             <button type="button" data-id="${id}" onclick="stepKlinikQty(this.dataset.id, 1)" aria-label="Tambah" class="w-10 h-10 text-xl font-black text-slate-600 rounded-xl active:bg-slate-200">+</button>
           </div>
+          <p class="text-[10px] font-bold text-slate-500 text-center -my-1">${escapeHtml(it.unitBungkus || '')}</p>
           <button type="button" data-id="${id}" onclick="recordKlinikUsage(this.dataset.id)" class="bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-extrabold text-sm py-2.5 rounded-xl shadow shadow-purple-600/25">
             <i class="fa-solid fa-arrow-right-from-bracket mr-1"></i> Keluar
           </button>
@@ -5812,7 +6491,11 @@ async function recordKlinikUsage(itemId) {
       if (!cur) throw new Error('Item tidak dijumpai dalam stor klinik.');
       if (qty > cur.baki) throw new Error(`Baki tidak mencukupi (baki ${cur.baki}).`);
       bakiBaru = cur.baki - qty;
-      tx.set(ref, { items: { [itemId]: { ...cur, baki: bakiBaru } }, dikemaskiniPada: new Date().toISOString() }, { merge: true });
+      // Ringkasan penggunaan bulanan ('YYYY-MM' -> kuantiti) untuk paparan semasa memohon
+      const month = currentMonthKey();
+      const keluarBulan = { ...(cur.keluarBulan || {}) };
+      keluarBulan[month] = toInt(keluarBulan[month]) + qty;
+      tx.set(ref, { items: { [itemId]: { ...cur, baki: bakiBaru, keluarBulan } }, dikemaskiniPada: new Date().toISOString() }, { merge: true });
       tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('keluar', unit, [
         { itemId, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: bakiBaru }
       ]));
@@ -5890,11 +6573,18 @@ function klinikMonthStats(unit, month) {
     .forEach(r => (r.items || []).forEach(i => {
       if (i.status === 'Lulus' && toInt(i.qtyLulus) > 0) {
         const k = klinikItemKey(i);
-        lulus[k] = (lulus[k] || 0) + toInt(i.qtyLulus);
+        // Diluluskan dalam unit stor; ditukar ke unit klinik supaya boleh dibanding dengan penggunaan
+        lulus[k] = (lulus[k] || 0) + toInt(i.qtyLulus) * klinikUnitOf(k, i.sku).faktor;
       }
     }));
+  // Pindahan bersih (masuk + batal − keluar) setiap item
+  const pindah = {};
+  [['pindah_masuk', 1], ['pindah_batal', 1], ['pindah_keluar', -1]].forEach(([jenis, sign]) => {
+    Object.entries(sumLogs(jenis)).forEach(([k, v]) => { pindah[k] = (pindah[k] || 0) + sign * v; });
+  });
   return {
     lulus,
+    pindah,
     terima: sumLogs('terima'),
     keluar: sumLogs('keluar'),
     menunggu: requests.filter(r => r.unit === unit && r.terimaKlinik === 'Menunggu').length
@@ -5915,6 +6605,7 @@ function klinikItemStatus(baki, keluar) {
 function renderAdminKlinik() {
   const body = document.getElementById('admin-klinik-summary-body');
   if (!body || !isAdminLoggedIn) return;
+  renderAdminPindahan();
   const month = adminKlinikMonth || currentMonthKey();
   const monthInput = document.getElementById('admin-klinik-month');
   if (monthInput && monthInput.value !== month) monthInput.value = month;
@@ -5965,7 +6656,7 @@ function renderAdminKlinikDetail(month) {
   }
   const doc = klinikDocFor(unit);
   const s = klinikMonthStats(unit, month);
-  const keys = new Set([...Object.keys(doc ? doc.items : {}), ...Object.keys(s.lulus), ...Object.keys(s.terima), ...Object.keys(s.keluar)]);
+  const keys = new Set([...Object.keys(doc ? doc.items : {}), ...Object.keys(s.lulus), ...Object.keys(s.terima), ...Object.keys(s.keluar), ...Object.keys(s.pindah)]);
   const statusOrder = { habis: 0, hampir: 1, ok: 2 };
   const rows = [...keys].map(k => {
     const it = (doc && doc.items[k]) || null;
@@ -5973,10 +6664,11 @@ function renderAdminKlinikDetail(month) {
     const baki = it ? it.baki : 0;
     const keluar = s.keluar[k] || 0;
     return {
+      key: k,
       sku: (it && it.sku) || (inv && inv.sku) || k,
       nama: (it && it.nama) || (inv && inv.nama) || k,
       unitBungkus: (it && it.unitBungkus) || (inv && inv.unit) || '',
-      baki, lulus: s.lulus[k] || 0, terima: s.terima[k] || 0, keluar,
+      baki, lulus: s.lulus[k] || 0, terima: s.terima[k] || 0, keluar, pindah: s.pindah[k] || 0,
       status: klinikItemStatus(baki, keluar)
     };
   }).sort((a, b) => statusOrder[a.status] - statusOrder[b.status] || a.nama.localeCompare(b.nama));
@@ -6010,6 +6702,7 @@ function renderAdminKlinikDetail(month) {
             <th class="p-2.5 text-center">Baki Klinik</th>
             <th class="p-2.5 text-center">Diluluskan</th>
             <th class="p-2.5 text-center">Diterima</th>
+            <th class="p-2.5 text-center" title="Pindahan masuk tolak pindahan keluar (BPIN)">Pindahan</th>
             <th class="p-2.5 text-center">Keluar</th>
             <th class="p-2.5 text-center">Status</th>
           </tr>
@@ -6019,12 +6712,13 @@ function renderAdminKlinikDetail(month) {
             <tr>
               <td class="p-2.5 font-semibold text-slate-500 whitespace-nowrap">${escapeHtml(r.sku)}</td>
               <td class="p-2.5 font-bold text-slate-800">${escapeHtml(r.nama)}</td>
-              <td class="p-2.5 text-center font-extrabold">${r.baki} <span class="font-medium text-slate-400">${escapeHtml(r.unitBungkus)}</span></td>
+              <td class="p-2.5 text-center font-extrabold">${escapeHtml(formatKlinikQty(r.baki, r.key, r.sku))}</td>
               <td class="p-2.5 text-center">${r.lulus || '-'}</td>
               <td class="p-2.5 text-center text-emerald-700 font-bold">${r.terima || '-'}</td>
+              <td class="p-2.5 text-center font-bold ${r.pindah < 0 ? 'text-sky-700' : 'text-teal-700'}">${r.pindah ? (r.pindah > 0 ? '+' : '−') + Math.abs(r.pindah) : '-'}</td>
               <td class="p-2.5 text-center text-purple-700 font-bold">${r.keluar || '-'}</td>
               <td class="p-2.5 text-center">${statusHtml[r.status]}</td>
-            </tr>`).join('') : '<tr><td colspan="7" class="p-4 text-center text-slate-400">Tiada item dalam stor klinik ini.</td></tr>'}
+            </tr>`).join('') : '<tr><td colspan="8" class="p-4 text-center text-slate-400">Tiada item dalam stor klinik ini.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -6052,6 +6746,1087 @@ function unlockKlinikBakiAwal(unit) {
       hideLoadingOverlay(token);
     }
   });
+}
+
+
+// ------------------------------------------
+// 17a. GAMBAR ITEM
+//   kraipro_item_images/{itemId} : { data: 'data:image/jpeg;base64,...', v }
+//   Item stok induk menyimpan gambarV (versi) supaya gambar hanya dimuat bagi item yang ada gambar,
+//   dan disimpan dalam cache pelayar sehingga versinya berubah. Gambar dimuat hanya apabila kelihatan di skrin.
+// ------------------------------------------
+const ITEM_IMAGE_MAX_PX = 480;
+const ITEM_IMAGE_MAX_CHARS = 120000; // ± 90 KB; had peraturan Firestore 200,000
+const itemImageCache = new Map();    // itemId -> { v, data }
+const itemImagePending = new Map();  // itemId -> Promise
+let itemImageDraft;                  // undefined = tiada perubahan, null = buang, string = gambar baharu
+let itemImageObserver = null;
+let itemImageHydrateQueued = false;
+
+function itemImageRef(itemId) {
+  return db.collection('kraipro_item_images').doc(String(itemId));
+}
+
+function itemImageVersion(itemId) {
+  const inv = items.find(i => String(i.id) === String(itemId));
+  return inv ? toInt(inv.gambarV) : 0;
+}
+
+// Gambar kecil (klik untuk besarkan). Item tanpa gambar: tiada apa-apa dipaparkan.
+function itemThumbHtml(itemId, size = 'w-9 h-9') {
+  const v = itemImageVersion(itemId);
+  if (!v) return '';
+  return `<button type="button" title="Lihat gambar" data-img-id="${escapeHtml(itemId)}" data-img-v="${v}" onclick="event.stopPropagation(); openImageLightbox(this.dataset.imgId)"
+    class="item-img-thumb ${size} shrink-0 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center text-slate-300 no-print">
+    <i class="fa-solid fa-image text-xs"></i><img alt="" class="hidden w-full h-full object-cover"></button>`;
+}
+
+async function getItemImage(itemId, v) {
+  const id = String(itemId);
+  const cached = itemImageCache.get(id);
+  if (cached && cached.v === v) return cached.data;
+  if (itemImagePending.has(id)) return itemImagePending.get(id);
+  const p = itemImageRef(id).get().then(snap => {
+    const data = snap.exists ? String(snap.data().data || '') : '';
+    itemImageCache.set(id, { v, data });
+    return data;
+  }).catch(err => {
+    console.warn('Gagal memuat gambar item:', err);
+    return '';
+  }).finally(() => itemImagePending.delete(id));
+  itemImagePending.set(id, p);
+  return p;
+}
+
+function applyThumb(el, data) {
+  const img = el.querySelector('img');
+  if (!img || !data) return;
+  img.src = data;
+  img.classList.remove('hidden');
+  el.querySelector('i')?.remove();
+}
+
+async function loadThumb(el) {
+  const data = await getItemImage(el.dataset.imgId, toInt(el.dataset.imgV));
+  applyThumb(el, data);
+}
+
+// Isi gambar kecil yang baru dipaparkan (dipanggil secara automatik apabila kandungan halaman berubah)
+function hydrateItemImages() {
+  itemImageHydrateQueued = false;
+  if (!db || !currentUserEmail) return;
+  if (!itemImageObserver && 'IntersectionObserver' in window) {
+    itemImageObserver = new IntersectionObserver(entries => entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      itemImageObserver.unobserve(e.target);
+      loadThumb(e.target);
+    }), { rootMargin: '200px' });
+  }
+  document.querySelectorAll('.item-img-thumb:not([data-img-ready])').forEach(el => {
+    el.dataset.imgReady = '1';
+    const cached = itemImageCache.get(el.dataset.imgId);
+    if (cached && cached.v === toInt(el.dataset.imgV)) applyThumb(el, cached.data);
+    else if (itemImageObserver) itemImageObserver.observe(el);
+    else loadThumb(el);
+  });
+}
+
+function startItemImageWatcher() {
+  new MutationObserver(() => {
+    if (itemImageHydrateQueued) return;
+    itemImageHydrateQueued = true;
+    setTimeout(hydrateItemImages, 50);
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
+async function openImageLightbox(itemId) {
+  const inv = items.find(i => String(i.id) === String(itemId));
+  const v = itemImageVersion(itemId);
+  if (!inv || !v) return;
+  const box = document.getElementById('image-lightbox');
+  const img = document.getElementById('image-lightbox-img');
+  const cap = document.getElementById('image-lightbox-caption');
+  if (!box || !img) return;
+  img.removeAttribute('src');
+  if (cap) cap.textContent = `${inv.sku} · ${inv.nama}`;
+  box.classList.remove('hidden');
+  const data = await getItemImage(itemId, v);
+  if (data) img.src = data;
+}
+
+function closeImageLightbox() {
+  document.getElementById('image-lightbox')?.classList.add('hidden');
+}
+
+// Kecilkan gambar dalam pelayar: sisi terpanjang 480 px, JPEG; kurangkan kualiti sehingga cukup kecil
+function compressItemImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let maxPx = ITEM_IMAGE_MAX_PX;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff'; // latar putih bagi PNG lutsinar
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        for (const q of [0.78, 0.65, 0.5]) {
+          const data = canvas.toDataURL('image/jpeg', q);
+          if (data.length <= ITEM_IMAGE_MAX_CHARS) return resolve(data);
+        }
+        maxPx = Math.round(maxPx * 0.75);
+      }
+      reject(new Error('Gambar terlalu besar walaupun selepas dikecilkan.'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Fail ini bukan gambar yang sah.')); };
+    img.src = url;
+  });
+}
+
+function setItemImagePreview(data) {
+  const box = document.getElementById('modal-item-image-preview');
+  if (box) box.innerHTML = data ? `<img src="${data}" alt="" class="w-full h-full object-cover">` : '<i class="fa-solid fa-image text-3xl"></i>';
+  document.getElementById('modal-item-image-remove')?.classList.toggle('hidden', !data);
+}
+
+async function prepareItemImageEditor(item) {
+  itemImageDraft = undefined;
+  const input = document.getElementById('modal-item-image-input');
+  if (input) input.value = '';
+  const note = document.getElementById('modal-item-image-note');
+  if (note) note.textContent = 'Gambar akan dikecilkan secara automatik (± 30 KB).';
+  setItemImagePreview('');
+  const v = item ? toInt(item.gambarV) : 0;
+  if (v) {
+    const data = await getItemImage(item.id, v);
+    if (itemImageDraft === undefined) setItemImagePreview(data);
+  }
+}
+
+async function onItemImageSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  const note = document.getElementById('modal-item-image-note');
+  try {
+    if (note) note.textContent = 'Mengecilkan gambar...';
+    const data = await compressItemImage(file);
+    itemImageDraft = data;
+    setItemImagePreview(data);
+    if (note) note.textContent = `Gambar sedia (${Math.round(data.length * 0.75 / 1024)} KB). Tekan Simpan untuk menyimpan.`;
+  } catch (err) {
+    if (note) note.textContent = 'Gambar akan dikecilkan secara automatik (± 30 KB).';
+    showToast('Gagal memproses gambar: ' + (err.message || err), 'error');
+  }
+}
+
+function removeItemImageDraft() {
+  itemImageDraft = null;
+  setItemImagePreview('');
+  const note = document.getElementById('modal-item-image-note');
+  if (note) note.textContent = 'Gambar akan dibuang apabila anda tekan Simpan.';
+}
+
+// Simpan perubahan gambar (dipanggil oleh saveItem); pulangkan gambarV baharu, atau undefined jika tiada perubahan
+async function commitItemImageDraft(itemId) {
+  if (itemImageDraft === undefined) return undefined;
+  const id = String(itemId);
+  if (itemImageDraft) {
+    const v = Date.now();
+    await itemImageRef(id).set({ data: itemImageDraft, v, dikemaskiniPada: new Date().toISOString(), dikemaskiniOleh: currentUserEmail });
+    itemImageCache.set(id, { v, data: itemImageDraft });
+    itemImageDraft = undefined;
+    return v;
+  }
+  await itemImageRef(id).delete();
+  itemImageCache.delete(id);
+  itemImageDraft = undefined;
+  return 0;
+}
+
+// Pratonton item dipilih dalam borang permohonan
+function renderReqItemPreview() {
+  const box = document.getElementById('req-item-preview');
+  const id = document.getElementById('req-item-select')?.value || '';
+  const inv = items.find(i => String(i.id) === String(id));
+  if (!box) return;
+  if (!inv) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    ${itemThumbHtml(inv.id, 'w-16 h-16') || '<span class="w-16 h-16 shrink-0 rounded-lg bg-slate-100 text-slate-300 flex items-center justify-center"><i class="fa-solid fa-image text-xl"></i></span>'}
+    <div class="min-w-0 text-xs">
+      <p class="font-extrabold text-slate-800 leading-snug">${escapeHtml(inv.nama)}</p>
+      <p class="text-slate-500">${escapeHtml(inv.sku)} · Baki stor daerah ${toInt(inv.baki)} ${escapeHtml(inv.unit || '')}</p>
+      ${klinikUsageHtml(inv.id, requesterUnit())}
+      ${toInt(inv.gambarV) ? '<p class="text-[10px] text-purple-600 font-bold">Klik gambar untuk besarkan</p>' : '<p class="text-[10px] text-slate-400">Tiada gambar</p>'}
+    </div>`;
+}
+
+
+// ------------------------------------------
+// 17a-2. PERMOHONAN ITEM BAHARU (tiada dalam Stok Induk)
+//   kraipro_item_baharu/{auto}: Baru -> Dalam Tindakan -> Ditambah (ke Stok Induk) / Ditolak; pemohon boleh Batal semasa Baru
+// ------------------------------------------
+let newItemRequests = [];
+let pendingNewItemLink = ''; // permohonan item baharu yang sedang ditambah ke Stok Induk
+
+const NEW_ITEM_STATUS = {
+  'Baru': { label: 'Baru', cls: 'bg-amber-100 text-amber-800' },
+  'Dalam Tindakan': { label: 'Dalam Tindakan', cls: 'bg-sky-100 text-sky-800' },
+  'Ditambah': { label: 'Ditambah ke Stok Induk', cls: 'bg-emerald-100 text-emerald-800' },
+  'Ditolak': { label: 'Ditolak', cls: 'bg-rose-100 text-rose-800' },
+  'Dibatalkan': { label: 'Dibatalkan', cls: 'bg-slate-200 text-slate-600' }
+};
+
+function newItemStatusBadge(s) {
+  const st = NEW_ITEM_STATUS[s] || { label: s, cls: 'bg-slate-100 text-slate-700' };
+  return `<span class="px-2 py-0.5 rounded-full text-[10px] font-black whitespace-nowrap ${st.cls}">${escapeHtml(st.label)}</span>`;
+}
+
+function startNewItemListener() {
+  const col = db.collection('kraipro_item_baharu');
+  const q = isAdminLoggedIn
+    ? col.where('createdAt', '>=', requestWindowStart())
+    : col.where('ownerEmail', '==', currentUserEmail);
+  firestoreUnsubscribers.push(q.onSnapshot((qs) => {
+    newItemRequests = qs.docs.map(d => ({ ...d.data(), id: d.id }))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    renderNewItemMine();
+    renderNewItemAdmin();
+  }, onFirestoreError('item baharu')));
+}
+
+function toggleNewItemForm(force) {
+  const form = document.getElementById('newitem-form');
+  if (!form) return;
+  const open = typeof force === 'boolean' ? force : form.classList.contains('hidden');
+  form.classList.toggle('hidden', !open);
+  const btn = document.getElementById('newitem-toggle');
+  if (btn) btn.innerHTML = open ? '<i class="fa-solid fa-xmark mr-1"></i> Tutup' : '<i class="fa-solid fa-plus mr-1"></i> Mohon Item Baharu';
+  const dl = document.getElementById('newitem-unit-list');
+  if (open && dl) dl.innerHTML = packagingUnits.map(u => `<option value="${escapeHtml(u)}"></option>`).join('');
+}
+
+async function submitNewItemRequest() {
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  const data = {
+    ownerEmail: currentUserEmail,
+    pemohonNama: (currentUserProfile && currentUserProfile.nama) || val('req-nama') || currentUserEmail,
+    unit: (currentUserProfile && currentUserProfile.unit) || document.getElementById('req-unit')?.value || '',
+    item: val('newitem-nama').slice(0, 150),
+    spesifikasi: val('newitem-spek').slice(0, 300),
+    kuantiti: toInt(val('newitem-qty')),
+    unitUkuran: val('newitem-unit').slice(0, 30),
+    justifikasi: val('newitem-justifikasi').slice(0, 500),
+    status: 'Baru',
+    tarikh: todayISODate(),
+    createdAt: new Date().toISOString()
+  };
+  if (!data.item || data.kuantiti <= 0 || !data.justifikasi) {
+    showToast('Sila isi Nama item, Kuantiti dan Justifikasi.', 'error');
+    return;
+  }
+  const dup = items.find(i => String(i.nama || '').toLowerCase() === data.item.toLowerCase());
+  if (dup) {
+    showToast(`"${dup.nama}" sudah ada dalam Stok Induk (${dup.sku}). Sila mohon melalui borang permohonan stok.`, 'error');
+    return;
+  }
+  const ok = await runWithLoading('Menghantar permohonan item baharu...', async () => {
+    await db.collection('kraipro_item_baharu').add(data);
+    return true;
+  }).catch(err => {
+    showToast('Gagal menghantar: ' + authErrorMessage(err), 'error');
+    return false;
+  });
+  if (!ok) return;
+  ['newitem-nama', 'newitem-spek', 'newitem-unit', 'newitem-justifikasi'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const q = document.getElementById('newitem-qty');
+  if (q) q.value = '1';
+  toggleNewItemForm(false);
+  addAuditLog('Permohonan Item Baharu', `${data.item} (${data.kuantiti} ${data.unitUkuran}) dipohon oleh ${data.pemohonNama} (${data.unit}).`);
+  showToast('Permohonan item baharu dihantar kepada pegawai pelulus.', 'success');
+}
+
+function cancelNewItemRequest(id) {
+  const r = newItemRequests.find(x => x.id === id);
+  if (!r || r.status !== 'Baru') return;
+  showConfirmModal('Batalkan Permohonan', `Batalkan permohonan item baharu "${r.item}"?`, async () => {
+    const token = showLoadingOverlay('Membatalkan permohonan...');
+    try {
+      await db.collection('kraipro_item_baharu').doc(id).update({ status: 'Dibatalkan', dikemaskiniPada: new Date().toISOString() });
+      showToast('Permohonan dibatalkan.', 'info');
+    } catch (err) {
+      showToast('Gagal membatalkan: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
+function renderNewItemMine() {
+  const box = document.getElementById('newitem-mine-list');
+  if (!box) return;
+  const mine = newItemRequests.filter(r => r.ownerEmail === currentUserEmail).slice(0, 20);
+  box.innerHTML = mine.length ? `
+    <p class="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Permohonan item baharu saya</p>
+    ${mine.map(r => `
+      <div class="flex items-start justify-between gap-3 border border-slate-200 rounded-xl p-3">
+        <div class="min-w-0 text-xs">
+          <p class="font-extrabold text-slate-800">${escapeHtml(r.item)} <span class="font-semibold text-slate-500">× ${toInt(r.kuantiti)} ${escapeHtml(r.unitUkuran || '')}</span></p>
+          ${r.spesifikasi ? `<p class="text-slate-500">${escapeHtml(r.spesifikasi)}</p>` : ''}
+          <p class="text-[11px] text-slate-400">${escapeHtml(formatDate(r.tarikh))}</p>
+          ${r.catatanPelulus ? `<p class="mt-1 text-[11px] font-semibold text-slate-700"><i class="fa-solid fa-comment-dots text-purple-500 mr-1"></i>${escapeHtml(r.catatanPelulus)}${r.diprosesNama ? ` <span class="text-slate-400">— ${escapeHtml(r.diprosesNama)}</span>` : ''}</p>` : ''}
+        </div>
+        <div class="shrink-0 flex flex-col items-end gap-1.5">
+          ${newItemStatusBadge(r.status)}
+          ${r.status === 'Baru' ? `<button type="button" data-id="${escapeHtml(r.id)}" onclick="cancelNewItemRequest(this.dataset.id)" class="text-[11px] font-bold text-rose-600 hover:text-rose-800">Batal</button>` : ''}
+        </div>
+      </div>`).join('')}` : '';
+}
+
+function renderNewItemAdmin() {
+  const body = document.getElementById('newitem-admin-body');
+  if (!body || !isAdminLoggedIn) return;
+  const showAll = !!document.getElementById('newitem-admin-showall')?.checked;
+  const open = newItemRequests.filter(r => r.status === 'Baru' || r.status === 'Dalam Tindakan');
+  const badge = document.getElementById('newitem-admin-badge');
+  const baru = newItemRequests.filter(r => r.status === 'Baru').length;
+  if (badge) {
+    badge.textContent = `${baru} baharu`;
+    badge.classList.toggle('hidden', baru === 0);
+  }
+  if (body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  const list = showAll ? newItemRequests : open;
+  body.innerHTML = list.length ? list.map(r => {
+    const id = escapeHtml(r.id);
+    const active = r.status === 'Baru' || r.status === 'Dalam Tindakan';
+    return `
+      <tr class="${r.status === 'Baru' ? 'bg-amber-50/60' : ''} align-top">
+        <td class="p-3 whitespace-nowrap">${escapeHtml(formatDate(r.tarikh))}</td>
+        <td class="p-3"><p class="font-bold text-slate-800">${escapeHtml(r.pemohonNama)}</p><p class="text-[11px] text-slate-500">${escapeHtml(r.unit)}</p></td>
+        <td class="p-3"><p class="font-extrabold text-slate-900">${escapeHtml(r.item)}</p>${r.spesifikasi ? `<p class="text-[11px] text-slate-500">${escapeHtml(r.spesifikasi)}</p>` : ''}</td>
+        <td class="p-3 text-center font-bold whitespace-nowrap">${toInt(r.kuantiti)} ${escapeHtml(r.unitUkuran || '')}</td>
+        <td class="p-3 text-slate-600 max-w-xs">${escapeHtml(r.justifikasi)}</td>
+        <td class="p-3 text-center">${newItemStatusBadge(r.status)}${r.catatanPelulus ? `<p class="text-[10px] text-slate-500 mt-1">${escapeHtml(r.catatanPelulus)}</p>` : ''}</td>
+        <td class="p-3">
+          ${active ? `
+            <input type="text" id="newitem-note-${id}" maxlength="300" placeholder="Catatan (pilihan)" class="w-full mb-1.5 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-[11px]">
+            <div class="flex flex-wrap gap-1 justify-center">
+              ${r.status === 'Baru' ? `<button type="button" data-id="${id}" onclick="setNewItemStatus(this.dataset.id, 'Dalam Tindakan')" class="bg-sky-100 hover:bg-sky-200 text-sky-800 font-bold text-[11px] px-2 py-1 rounded-lg">Dalam Tindakan</button>` : ''}
+              <button type="button" data-id="${id}" onclick="addNewItemToStock(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] px-2 py-1 rounded-lg"><i class="fa-solid fa-plus mr-0.5"></i>Tambah ke Stok Induk</button>
+              <button type="button" data-id="${id}" onclick="setNewItemStatus(this.dataset.id, 'Ditolak')" class="bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] px-2 py-1 rounded-lg">Tolak</button>
+            </div>` : `<p class="text-[11px] text-slate-400 text-center">${escapeHtml(r.diprosesNama || '')}</p>`}
+        </td>
+      </tr>`;
+  }).join('') : `<tr><td colspan="7" class="p-6 text-center text-slate-400">${showAll ? 'Tiada permohonan item baharu.' : 'Tiada permohonan item baharu yang menunggu tindakan.'}</td></tr>`;
+}
+
+function newItemProcessorName() {
+  return (currentApproverData && currentApproverData.nama) || (currentUserProfile && currentUserProfile.nama) || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail);
+}
+
+function setNewItemStatus(id, status) {
+  const r = newItemRequests.find(x => x.id === id);
+  if (!r || !isAdminLoggedIn) return;
+  const note = (document.getElementById(`newitem-note-${id}`)?.value || '').trim().slice(0, 300);
+  const run = async () => {
+    const token = showLoadingOverlay('Mengemas kini permohonan item baharu...');
+    try {
+      await db.collection('kraipro_item_baharu').doc(id).update({
+        status, catatanPelulus: note || r.catatanPelulus || '', diprosesOleh: currentUserEmail, diprosesNama: newItemProcessorName(), dikemaskiniPada: new Date().toISOString()
+      });
+      addAuditLog('Item Baharu: ' + status, `${r.item} (${r.pemohonNama}, ${r.unit})${note ? `: ${note}` : ''}.`);
+      showToast(`Permohonan "${r.item}" ditanda ${status}.`, 'success');
+    } catch (err) {
+      showToast('Gagal mengemas kini: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  };
+  if (status === 'Ditolak') showConfirmModal('Tolak Permohonan Item Baharu', `Tolak permohonan "${r.item}" daripada ${r.pemohonNama}?${note ? `\n\nCatatan: ${note}` : ''}`, run);
+  else run();
+}
+
+// Buka borang Tambah Item dengan maklumat daripada permohonan; selepas disimpan, permohonan ditanda "Ditambah"
+function addNewItemToStock(id) {
+  const r = newItemRequests.find(x => x.id === id);
+  if (!r || !isAdminLoggedIn) return;
+  openItemModal();
+  pendingNewItemLink = id;
+  const setVal = (eid, v) => { const el = document.getElementById(eid); if (el) el.value = v; };
+  setVal('modal-item-nama', [r.item, r.spesifikasi].filter(Boolean).join(' - ').slice(0, 200));
+  if (r.unitUkuran) populateModalUnits(r.unitUkuran);
+  const title = document.getElementById('item-modal-title');
+  if (title) title.innerText = 'Tambah Item Baharu (daripada permohonan)';
+}
+
+async function finalizeNewItemLink(linkId, itemData) {
+  const r = newItemRequests.find(x => x.id === linkId);
+  if (!r) return;
+  const note = (document.getElementById(`newitem-note-${linkId}`)?.value || '').trim().slice(0, 300);
+  try {
+    await db.collection('kraipro_item_baharu').doc(linkId).update({
+      status: 'Ditambah', itemIdBaru: String(itemData.id), skuBaru: itemData.sku,
+      catatanPelulus: note || `Ditambah ke Stok Induk sebagai ${itemData.sku}. Sila mohon melalui borang permohonan stok.`,
+      diprosesOleh: currentUserEmail, diprosesNama: newItemProcessorName(), dikemaskiniPada: new Date().toISOString()
+    });
+    addAuditLog('Item Baharu: Ditambah', `${r.item} ditambah ke Stok Induk sebagai [${itemData.sku}] ${itemData.nama}.`);
+  } catch (err) {
+    showToast('Item disimpan, tetapi status permohonan gagal dikemas kini: ' + authErrorMessage(err), 'error');
+  }
+}
+
+// ---- Penggunaan stor klinik pemohon (dipaparkan semasa memilih item) ----
+// Penggunaan bulanan disimpan dalam item stor klinik: keluarBulan { 'YYYY-MM': kuantiti }
+function shiftMonthKey(key, delta) {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function klinikUsageSummary(itemId, unit) {
+  const doc = unit ? klinikDocFor(unit) : null;
+  if (!doc || !doc.bakiAwalDikunci) return null;
+  const it = doc.items[String(itemId)];
+  const cur = currentMonthKey();
+  const startMonth = String(doc.bakiAwalPada || '').slice(0, 7) || cur;
+  const usage = (it && it.keluarBulan) || {};
+  // Purata 3 bulan lengkap terakhir (hanya bulan selepas baki awal diisi)
+  const months = [1, 2, 3].map(n => shiftMonthKey(cur, -n)).filter(m => m >= startMonth);
+  const avg = months.length ? months.reduce((s, m) => s + toInt(usage[m]), 0) / months.length : null;
+  return { baki: it ? it.baki : 0, avg, months: months.length, thisMonth: toInt(usage[cur]) };
+}
+
+// ---- Purata setahun: stok diluluskan (dikeluarkan) kepada unit/klinik tahun ini ÷ bilangan bulan setakat ini ----
+//   Pelulus/SuperAdmin mengira terus daripada permohonan dan menyegerakkan ringkasan ke kraipro_unit_usage;
+//   staf unit membaca ringkasan unit sendiri (mereka tidak boleh membaca permohonan rakan sekerja).
+let unitUsageDocs = {};          // docId -> { unit, tahun, items }
+let requestsRecentLoaded = false; // permohonan tempoh semasa telah dimuat (elak segerak dengan data separa)
+let unitUsageLoaded = false;
+let unitUsageSyncTimer = null;
+let unitTotalsMemo = { src: null, year: '', data: {} };
+
+function unitUsageDocId(unit, year) {
+  return `${klinikIdFor(unit)}_${year}`;
+}
+
+// { unit: { itemId: kuantiti diluluskan } } bagi tahun dipilih, daripada permohonan yang dimuat
+function computeUnitYearTotals(year) {
+  if (unitTotalsMemo.src === requests && unitTotalsMemo.year === year) return unitTotalsMemo.data;
+  const data = {};
+  requests.forEach(r => {
+    if (r.status !== 'Selesai' || !r.unit || !String(r.tarikhLulus || '').startsWith(year + '-')) return;
+    (r.items || []).forEach(i => {
+      if (i.status !== 'Lulus' || toInt(i.qtyLulus) <= 0) return;
+      const k = klinikItemKey(i);
+      if (!k) return;
+      const m = data[r.unit] || (data[r.unit] = {});
+      m[k] = (m[k] || 0) + toInt(i.qtyLulus);
+    });
+  });
+  unitTotalsMemo = { src: requests, year, data };
+  return data;
+}
+
+function unitYearIssued(unit, itemId) {
+  const year = todayISODate().slice(0, 4);
+  if (isAdminLoggedIn) return toInt((computeUnitYearTotals(year)[unit] || {})[String(itemId)]);
+  const d = unitUsageDocs[unitUsageDocId(unit, year)];
+  return d && d.items ? toInt(d.items[String(itemId)]) : 0;
+}
+
+function startUnitUsageListener() {
+  const year = todayISODate().slice(0, 4);
+  const col = db.collection('kraipro_unit_usage');
+  const apply = (docs) => {
+    unitUsageDocs = {};
+    docs.forEach(d => { unitUsageDocs[d.id] = d.data(); });
+    unitUsageLoaded = true;
+    renderReqItemPreview();
+    renderDraftTable();
+    if (isAdminLoggedIn) scheduleUnitUsageSync();
+  };
+  if (isAdminLoggedIn) {
+    firestoreUnsubscribers.push(col.where('tahun', '==', year).onSnapshot(qs => apply(qs.docs), onFirestoreError('ringkasan unit')));
+  } else if (currentUserProfile && currentUserProfile.unit) {
+    firestoreUnsubscribers.push(col.doc(unitUsageDocId(currentUserProfile.unit, year)).onSnapshot(
+      snap => apply(snap.exists ? [snap] : []), onFirestoreError('ringkasan unit')));
+  }
+}
+
+function scheduleUnitUsageSync() {
+  if (!isAdminLoggedIn) return;
+  clearTimeout(unitUsageSyncTimer);
+  unitUsageSyncTimer = setTimeout(syncUnitUsageSummaries, 3000);
+}
+
+// Tulis ringkasan yang berubah sahaja (jarang; biasanya selepas kelulusan / pembatalan)
+async function syncUnitUsageSummaries() {
+  if (!isAdminLoggedIn || !requestsRecentLoaded || !unitUsageLoaded) return;
+  const year = todayISODate().slice(0, 4);
+  const totals = computeUnitYearTotals(year);
+  const canon = (obj) => JSON.stringify(Object.keys(obj || {}).sort().map(k => [k, obj[k]]));
+  const units = new Set([...Object.keys(totals), ...Object.values(unitUsageDocs).map(d => d.unit).filter(Boolean)]);
+  const ops = [];
+  units.forEach(unit => {
+    const id = unitUsageDocId(unit, year);
+    const want = totals[unit] || {};
+    if (canon(want) === canon(unitUsageDocs[id] && unitUsageDocs[id].items)) return;
+    ops.push(b => b.set(db.collection('kraipro_unit_usage').doc(id), { unit, tahun: year, items: want, dikemaskiniPada: new Date().toISOString() }));
+  });
+  if (ops.length === 0) return;
+  try {
+    await commitInBatches(ops);
+  } catch (err) {
+    console.warn('Gagal menyegerakkan ringkasan penggunaan unit:', err);
+  }
+}
+
+function klinikUsageHtml(itemId, unit, compact = false) {
+  if (!unit) return '';
+  const u = klinikUnitOf(itemId);
+  const storeUnit = escapeHtml(u.storeUnit || (u.inv && u.inv.unit) || '');
+  const year = todayISODate().slice(0, 4);
+  const months = parseInt(todayISODate().slice(5, 7));
+  const issued = unitYearIssued(unit, itemId);
+  const avg = Math.round(issued / months * 10) / 10;
+  const s = klinikUsageSummary(itemId, unit); // baki stor klinik (jika klinik ada Stor Klinik)
+  const bakiText = s ? ` · baki klinik ${escapeHtml(formatKlinikQty(s.baki, itemId))}` : '';
+  const title = `Diluluskan kepada ${unit} dalam ${year}: ${issued} ${u.storeUnit || ''} dalam ${months} bulan`;
+  return compact
+    ? `<span class="block text-[10px] font-semibold text-sky-700" title="${escapeHtml(title)}"><i class="fa-solid fa-house-medical mr-0.5"></i>Purata ${avg} ${storeUnit}/bulan (${year})${bakiText}</span>`
+    : `<p class="text-[11px] font-semibold text-sky-700 mt-0.5"><i class="fa-solid fa-house-medical mr-1"></i>${escapeHtml(unit)}: purata <b>${avg} ${storeUnit}/bulan</b> <span class="font-medium text-slate-500">(${issued} ${storeUnit} diluluskan dalam ${months} bulan ${year})</span>${bakiText}</p>`;
+}
+
+function requesterUnit() {
+  return document.getElementById('req-unit')?.value || (currentUserProfile && currentUserProfile.unit) || '';
+}
+
+
+// ------------------------------------------
+// 17b-2. PINDAHAN STOK (KEW.PS-17 / BPIN)
+//   Klinik pemberi menghantar (stok ditolak serta-merta) -> klinik penerima sahkan terima (stok ditambah).
+//   Pulangan ke stor daerah: keUnit = 'Stor Daerah'; disahkan oleh pelulus/SuperAdmin (baki stok induk bertambah).
+//   Klinik pemberi (atau SuperAdmin) boleh membatalkan sebelum diterima; stok dipulangkan ke klinik pemberi.
+// ------------------------------------------
+const PINDAHAN_DISTRICT = 'Stor Daerah';
+let pindahanSources = { all: [], out: [], in: [] };
+let pindahanList = [];
+let klinikPindahDraft = {}; // itemId -> kuantiti
+
+function pindahanRef(id) {
+  return db.collection('kraipro_pindahan').doc(String(id));
+}
+
+function pindahanUnitLabel(unit) {
+  return unit === PINDAHAN_DISTRICT ? 'Stor Daerah (PKPD Kuala Krai)' : unit;
+}
+
+function sanitizePindahan(p) {
+  if (!p || !SAFE_ID_RE.test(String(p.id || ''))) return null;
+  return {
+    ...p,
+    id: String(p.id),
+    items: Array.isArray(p.items) ? p.items.filter(i => i && typeof i === 'object').map(i => ({ ...i, qty: toInt(i.qty) })) : [],
+    terimaQty: Array.isArray(p.terimaQty) ? p.terimaQty.map(toInt) : []
+  };
+}
+
+function rebuildPindahan() {
+  const byId = new Map();
+  [...pindahanSources.all, ...pindahanSources.out, ...pindahanSources.in].forEach(p => byId.set(p.id, p));
+  pindahanList = [...byId.values()].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  renderKlinikAll();
+}
+
+function startPindahanListeners() {
+  const toList = (qs) => qs.docs.map(d => sanitizePindahan(d.data())).filter(Boolean);
+  const col = db.collection('kraipro_pindahan');
+  if (isAdminLoggedIn) {
+    // Tahun semasa + tahun lepas (sama seperti tempoh permohonan)
+    firestoreUnsubscribers.push(col.where('tahun', '>=', requestWindowStart().slice(0, 4)).onSnapshot((qs) => {
+      pindahanSources.all = toList(qs);
+      rebuildPindahan();
+    }, onFirestoreError('pindahan')));
+  }
+  if (isKlinikPenjaga()) {
+    const unit = myKlinikUnit();
+    firestoreUnsubscribers.push(col.where('dariUnit', '==', unit).onSnapshot((qs) => {
+      pindahanSources.out = toList(qs);
+      rebuildPindahan();
+    }, onFirestoreError('pindahan keluar')));
+    firestoreUnsubscribers.push(col.where('keUnit', '==', unit).onSnapshot((qs) => {
+      pindahanSources.in = toList(qs);
+      rebuildPindahan();
+    }, onFirestoreError('pindahan masuk')));
+  }
+}
+
+function pindahanItemsText(p, max = 4) {
+  const list = p.items.slice(0, max).map(i => `${escapeHtml(i.nama)} <b>×${toInt(i.qty)}</b> ${escapeHtml(i.unit || '')}`).join(', ');
+  return list + (p.items.length > max ? ` <span class="text-slate-400">+${p.items.length - max} lagi</span>` : '');
+}
+
+function pindahanStatusBadge(p) {
+  const map = {
+    Dihantar: 'bg-amber-100 text-amber-800',
+    Diterima: 'bg-emerald-100 text-emerald-800',
+    Dibatalkan: 'bg-slate-200 text-slate-600'
+  };
+  const label = p.status === 'Dihantar' ? 'Menunggu terima' : p.status;
+  return `<span class="px-2 py-0.5 rounded-full text-[10px] font-black ${map[p.status] || 'bg-slate-100'}">${escapeHtml(label)}</span>`;
+}
+
+// Destinasi: klinik lain yang mempunyai penjaga stor, dan stor daerah (pulangan)
+function pindahanDestinations() {
+  const mine = myKlinikUnit();
+  const units = [...new Set(appUsers.filter(u => u.penjagaStor && u.unit && u.unit !== mine).map(u => u.unit))]
+    .sort((a, b) => a.localeCompare(b));
+  return [PINDAHAN_DISTRICT, ...units];
+}
+
+// ---- Paparan penjaga stor klinik ----
+function toggleKlinikPindahForm(force) {
+  const form = document.getElementById('klinik-pindah-form');
+  if (!form) return;
+  const open = typeof force === 'boolean' ? force : form.classList.contains('hidden');
+  form.classList.toggle('hidden', !open);
+  const btn = document.getElementById('klinik-pindah-toggle');
+  if (btn) btn.innerHTML = open ? '<i class="fa-solid fa-xmark mr-1"></i> Tutup' : '<i class="fa-solid fa-plus mr-1"></i> Pindahan Baharu';
+  if (open) {
+    const sel = document.getElementById('klinik-pindah-ke');
+    if (sel) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">-- Pilih destinasi --</option>' + pindahanDestinations()
+        .map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u === PINDAHAN_DISTRICT ? 'Stor Daerah (pulang stok)' : u)}</option>`).join('');
+      if (cur) sel.value = cur;
+    }
+    renderKlinikPindahItems();
+  }
+}
+
+function renderKlinikPindahItems() {
+  const box = document.getElementById('klinik-pindah-items');
+  if (!box) return;
+  updateKlinikPindahCount();
+  if (box.contains(document.activeElement)) return;
+  const doc = klinikDocFor(myKlinikUnit());
+  const q = (document.getElementById('klinik-pindah-search')?.value || '').trim().toLowerCase();
+  const list = klinikItemList(doc).filter(it => it.baki > 0 && klinikMatches(it, q))
+    .sort((a, b) => String(a.nama).localeCompare(String(b.nama)));
+  box.innerHTML = list.length ? list.map(it => {
+    const v = klinikPindahDraft[it.id];
+    return `
+      <div class="flex items-center gap-3 rounded-xl px-3 py-2 ${v ? 'bg-white border border-purple-300' : 'bg-white/70 border border-transparent'}">
+        ${itemThumbHtml(it.id, 'w-11 h-11')}
+        <div class="min-w-0 flex-1">
+          <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(it.nama)}</p>
+          <p class="text-[11px] text-slate-500">${escapeHtml(it.sku)} · Baki ${escapeHtml(formatKlinikQty(it.baki, it.id, it.sku))}</p>
+        </div>
+        <input type="number" min="0" max="${it.baki}" inputmode="numeric" placeholder="0" data-id="${escapeHtml(it.id)}" value="${v || ''}"
+          oninput="setKlinikPindahQty(this.dataset.id, this.value)" aria-label="Kuantiti pindah ${escapeHtml(it.nama)}"
+          class="w-20 shrink-0 bg-white border border-slate-300 rounded-xl px-2 py-2.5 text-center text-sm font-extrabold focus:ring-2 focus:ring-purple-500">
+      </div>`;
+  }).join('') : '<p class="text-center text-sm text-slate-400 py-4">Tiada item dengan baki.</p>';
+}
+
+function setKlinikPindahQty(id, value) {
+  const n = toInt(value);
+  if (n > 0) klinikPindahDraft[id] = n;
+  else delete klinikPindahDraft[id];
+  updateKlinikPindahCount();
+}
+
+function updateKlinikPindahCount() {
+  const el = document.getElementById('klinik-pindah-count');
+  if (el) el.textContent = `${Object.keys(klinikPindahDraft).length} item dipilih`;
+}
+
+function submitKlinikPindahan() {
+  const unit = myKlinikUnit();
+  const doc = klinikDocFor(unit);
+  const keUnit = document.getElementById('klinik-pindah-ke')?.value || '';
+  const catatan = (document.getElementById('klinik-pindah-catatan')?.value || '').trim().slice(0, 200);
+  if (!unit || !doc) return;
+  if (!keUnit) {
+    showToast('Sila pilih destinasi pindahan.', 'error');
+    return;
+  }
+  const lines = Object.entries(klinikPindahDraft).map(([id, qty]) => ({ id, qty: toInt(qty), it: doc.items[id] })).filter(l => l.it && l.qty > 0);
+  if (lines.length === 0) {
+    showToast('Sila masukkan kuantiti sekurang-kurangnya satu item.', 'error');
+    return;
+  }
+  const over = lines.find(l => l.qty > l.it.baki);
+  if (over) {
+    showToast(`Kuantiti ${over.it.nama} melebihi baki (${over.it.baki}).`, 'error');
+    return;
+  }
+  // Pulangan ke stor daerah mesti dalam unit stor penuh (cth: gandaan 5 Paket = 1 Box)
+  if (keUnit === PINDAHAN_DISTRICT) {
+    const partial = lines.find(l => l.qty % klinikUnitOf(l.id, l.it.sku).faktor !== 0);
+    if (partial) {
+      const u = klinikUnitOf(partial.id, partial.it.sku);
+      showToast(`Pulangan ${partial.it.nama} mesti dalam ${u.storeUnit} penuh (gandaan ${u.faktor} ${u.unit}).`, 'error');
+      return;
+    }
+  }
+
+  const keLabel = pindahanUnitLabel(keUnit);
+  showConfirmModal(keUnit === PINDAHAN_DISTRICT ? 'Pulangkan Stok' : 'Pindah Stok',
+    `Hantar ${lines.length} item kepada ${keLabel}?\n\nStok akan ditolak daripada stor ${unit} sekarang, dan masuk ke ${keLabel} selepas penerima mengesahkan terima.`,
+    async () => {
+      const token = showLoadingOverlay('Menghantar pindahan stok...');
+      try {
+        const year = todayISODate().slice(0, 4);
+        const counterRef = db.collection('kraipro_counters').doc(`bpin_${year}`);
+        let pinId = '';
+        await db.runTransaction(async (tx) => {
+          const cSnap = await tx.get(counterRef);
+          const seq = cSnap.exists ? (cSnap.data().seq || 0) + 1 : 1;
+          pinId = `BPIN-${year}-${String(seq).padStart(3, '0')}`;
+          const exists = await tx.get(pindahanRef(pinId));
+          if (exists.exists) throw new Error(`No. BPIN ${pinId} telah wujud. Sila hubungi SuperAdmin.`);
+          const kRef = klinikRef(unit);
+          const kSnap = await tx.get(kRef);
+          const kItems = kSnap.exists ? sanitizeKlinik(kSnap.data()).items : {};
+
+          const changes = {};
+          const logItems = [];
+          const pinItems = lines.map(l => {
+            const cur = kItems[l.id];
+            if (!cur || cur.baki < l.qty) throw new Error(`Baki ${l.it.nama} tidak mencukupi (baki ${cur ? cur.baki : 0}).`);
+            changes[l.id] = { ...cur, baki: cur.baki - l.qty };
+            logItems.push({ itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty: l.qty, bakiSelepas: cur.baki - l.qty });
+            return { itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', faktor: cur.faktor || 1, kategori: cur.kategori || '', qty: l.qty };
+          });
+
+          const now = new Date().toISOString();
+          tx.set(counterRef, { seq });
+          tx.set(kRef, { items: changes, dikemaskiniPada: now }, { merge: true });
+          tx.set(pindahanRef(pinId), {
+            id: pinId, tahun: year, tarikh: todayISODate(), createdAt: now,
+            dariUnit: unit, keUnit, catatan, items: pinItems, status: 'Dihantar',
+            pengirimEmail: currentUserEmail,
+            pengirimNama: (currentUserProfile && currentUserProfile.nama) || currentUserEmail,
+            pengirimJawatan: [currentUserProfile && currentUserProfile.jawatan, currentUserProfile && currentUserProfile.gred].filter(Boolean).join(' ')
+          });
+          tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('pindah_keluar', unit, logItems, { ref: pinId, catatan: `Pindah kepada ${keLabel}` }));
+        });
+        klinikPindahDraft = {};
+        const cat = document.getElementById('klinik-pindah-catatan');
+        if (cat) cat.value = '';
+        toggleKlinikPindahForm(false);
+        addAuditLog('Pindahan Stok', `${pinId}: ${lines.length} item dari ${unit} kepada ${keLabel}.`);
+        showToast(`${pinId} dihantar kepada ${keLabel}.`, 'success');
+      } catch (err) {
+        showToast('Gagal menghantar pindahan: ' + authErrorMessage(err), 'error');
+      } finally {
+        hideLoadingOverlay(token);
+      }
+    });
+}
+
+// Pindahan masuk yang menunggu pengesahan (dipaparkan dalam kad "Stok Sampai")
+function klinikIncomingPindahan() {
+  const unit = myKlinikUnit();
+  return pindahanList.filter(p => p.keUnit === unit && p.status === 'Dihantar')
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+}
+
+function renderKlinikPindahMasuk() {
+  const box = document.getElementById('klinik-pindahan-masuk-list');
+  if (!box) return;
+  if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  const locked = !!(klinikDocFor(myKlinikUnit()) || {}).bakiAwalDikunci;
+  box.innerHTML = klinikIncomingPindahan().map(p => `
+    <div class="border border-teal-200 bg-teal-50/40 rounded-2xl p-3 space-y-2">
+      <div>
+        <p class="text-sm font-extrabold text-slate-900"><i class="fa-solid fa-right-left text-teal-600 mr-1"></i>${escapeHtml(p.id)} <span class="text-[11px] font-bold text-teal-700">Pindahan stok</span></p>
+        <p class="text-[11px] text-slate-500">Daripada ${escapeHtml(pindahanUnitLabel(p.dariUnit))} · ${escapeHtml(formatDate(p.tarikh))} · ${escapeHtml(p.pengirimNama || '')}${p.catatan ? ` · ${escapeHtml(p.catatan)}` : ''}</p>
+      </div>
+      ${p.items.map((i, idx) => `
+        <div class="flex items-center gap-3 bg-white rounded-xl px-3 py-2">
+          <div class="min-w-0 flex-1">
+            <p class="text-[13px] font-bold text-slate-800 leading-snug">${escapeHtml(i.nama)}</p>
+            <p class="text-[11px] text-slate-500">Dihantar: <b>${toInt(i.qty)}</b> ${escapeHtml(i.unit || '')}</p>
+          </div>
+          <label class="text-[10px] font-bold text-slate-500 text-center shrink-0">Diterima
+            <input type="number" min="0" max="${toInt(i.qty)}" inputmode="numeric" id="pindah-terima-${escapeHtml(p.id)}-${idx}" value="${toInt(i.qty)}"
+              class="block w-20 mt-0.5 bg-white border border-slate-300 rounded-xl px-2 py-2 text-center text-sm font-extrabold text-slate-900 focus:ring-2 focus:ring-teal-500">
+          </label>
+        </div>`).join('')}
+      <button type="button" data-id="${escapeHtml(p.id)}" onclick="confirmKlinikPindahan(this.dataset.id)" ${locked ? '' : 'disabled'}
+        class="w-full bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-extrabold text-sm py-3 rounded-2xl shadow">
+        <i class="fa-solid fa-check-double mr-1"></i> Sahkan Terima Pindahan
+      </button>
+      ${locked ? '' : '<p class="text-[11px] font-bold text-amber-700 text-center">Isi baki awal stor klinik dahulu sebelum mengesahkan penerimaan.</p>'}
+    </div>`).join('');
+}
+
+function confirmKlinikPindahan(pinId) {
+  const p = pindahanList.find(x => x.id === pinId);
+  const unit = myKlinikUnit();
+  if (!p || !unit) return;
+  const qtys = p.items.map((i, idx) => {
+    const el = document.getElementById(`pindah-terima-${p.id}-${idx}`);
+    return Math.min(toInt(i.qty), Math.max(0, el ? toInt(el.value) : toInt(i.qty)));
+  });
+  const short = p.items.filter((i, idx) => qtys[idx] < toInt(i.qty)).length;
+  showConfirmModal('Sahkan Terima Pindahan',
+    `Sahkan penerimaan ${p.id} (${p.items.length} item) daripada ${pindahanUnitLabel(p.dariUnit)}?` + (short ? ` ${short} item diterima KURANG daripada yang dihantar.` : ''),
+    async () => {
+      const token = showLoadingOverlay(`Merekod penerimaan ${p.id}...`);
+      try {
+        await db.runTransaction(async (tx) => {
+          const pSnap = await tx.get(pindahanRef(p.id));
+          const kRef = klinikRef(unit);
+          const kSnap = await tx.get(kRef);
+          if (!pSnap.exists) throw new Error('Pindahan tidak dijumpai.');
+          const cur = sanitizePindahan(pSnap.data());
+          if (cur.status !== 'Dihantar' || cur.keUnit !== unit) throw new Error('Pindahan ini telah diterima atau dibatalkan.');
+          if (!kSnap.exists || !kSnap.data().bakiAwalDikunci) throw new Error('Sila isi baki awal stor klinik dahulu.');
+          const kItems = sanitizeKlinik(kSnap.data()).items;
+          const changes = {};
+          const logItems = [];
+          cur.items.forEach((i, idx) => {
+            const qty = toInt(qtys[idx]);
+            if (qty <= 0) return;
+            const id = String(i.itemId || i.sku);
+            const base = changes[id] || kItems[id] || { sku: i.sku || '', nama: i.nama || '', unitBungkus: klinikUnitOf(id, i.sku).unit || i.unit || '', faktor: klinikUnitOf(id, i.sku).faktor, kategori: i.kategori || '', baki: 0 };
+            changes[id] = { ...base, baki: toInt(base.baki) + qty };
+            logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty, bakiSelepas: changes[id].baki });
+          });
+          const now = new Date().toISOString();
+          tx.set(kRef, { items: changes, dikemaskiniPada: now }, { merge: true });
+          tx.update(pindahanRef(p.id), {
+            status: 'Diterima', penerimaEmail: currentUserEmail,
+            penerimaNama: (currentUserProfile && currentUserProfile.nama) || currentUserEmail,
+            terimaPada: now, terimaQty: qtys
+          });
+          tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('pindah_masuk', unit, logItems, { ref: p.id, catatan: `Pindahan dari ${pindahanUnitLabel(cur.dariUnit)}` }));
+        });
+        addAuditLog('Terima Pindahan Stok', `${unit}: ${p.id} daripada ${p.dariUnit} disahkan terima${short ? ` (${short} item kurang)` : ''}.`);
+        showToast(`${p.id} disahkan terima. Stok klinik dikemas kini.`, 'success');
+      } catch (err) {
+        showToast('Gagal mengesahkan pindahan: ' + authErrorMessage(err), 'error');
+      } finally {
+        hideLoadingOverlay(token);
+      }
+    });
+}
+
+// Batal pindahan yang belum diterima: stok dipulangkan ke klinik pemberi
+function cancelPindahan(pinId) {
+  const p = pindahanList.find(x => x.id === pinId);
+  if (!p || p.status !== 'Dihantar') return;
+  const isSender = isKlinikPenjaga() && p.dariUnit === myKlinikUnit();
+  if (!isSender && currentUserRole !== 'superadmin') return;
+  showConfirmModal('Batalkan Pindahan', `Batalkan ${p.id}? Stok akan dipulangkan ke stor ${p.dariUnit}.`, async () => {
+    const token = showLoadingOverlay(`Membatalkan ${p.id}...`);
+    try {
+      await db.runTransaction(async (tx) => {
+        const pSnap = await tx.get(pindahanRef(p.id));
+        const kRef = klinikRef(p.dariUnit);
+        const kSnap = await tx.get(kRef);
+        if (!pSnap.exists) throw new Error('Pindahan tidak dijumpai.');
+        const cur = sanitizePindahan(pSnap.data());
+        if (cur.status !== 'Dihantar') throw new Error('Pindahan ini telah diterima atau dibatalkan.');
+        const kItems = kSnap.exists ? sanitizeKlinik(kSnap.data()).items : {};
+        const changes = {};
+        const logItems = [];
+        cur.items.forEach(i => {
+          const id = String(i.itemId || i.sku);
+          const base = changes[id] || kItems[id] || { sku: i.sku || '', nama: i.nama || '', unitBungkus: klinikUnitOf(id, i.sku).unit || i.unit || '', faktor: klinikUnitOf(id, i.sku).faktor, kategori: i.kategori || '', baki: 0 };
+          changes[id] = { ...base, baki: toInt(base.baki) + toInt(i.qty) };
+          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty: toInt(i.qty), bakiSelepas: changes[id].baki });
+        });
+        const now = new Date().toISOString();
+        tx.set(kRef, { unit: cur.dariUnit, items: changes, dikemaskiniPada: now }, { merge: true });
+        tx.update(pindahanRef(p.id), { status: 'Dibatalkan', batalPada: now, dibatalkanOleh: currentUserEmail });
+        tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('pindah_batal', cur.dariUnit, logItems, { ref: p.id, catatan: 'Pindahan dibatalkan' }));
+      });
+      addAuditLog('Batal Pindahan Stok', `${p.id} dibatalkan; stok dipulangkan ke ${p.dariUnit}.`);
+      showToast(`${p.id} dibatalkan. Stok dipulangkan ke ${p.dariUnit}.`, 'success');
+    } catch (err) {
+      showToast('Gagal membatalkan pindahan: ' + authErrorMessage(err), 'error');
+    } finally {
+      hideLoadingOverlay(token);
+    }
+  });
+}
+
+function renderKlinikPindahan() {
+  const card = document.getElementById('klinik-pindah-card');
+  if (!card || !isKlinikPenjaga()) return;
+  const unit = myKlinikUnit();
+  const locked = !!(klinikDocFor(unit) || {}).bakiAwalDikunci;
+  card.classList.toggle('hidden', !locked);
+  if (!locked) return;
+  if (!document.getElementById('klinik-pindah-form')?.classList.contains('hidden')) renderKlinikPindahItems();
+
+  const box = document.getElementById('klinik-pindah-list');
+  if (!box) return;
+  const mine = pindahanList.filter(p => p.dariUnit === unit || (p.keUnit === unit && p.status !== 'Dihantar')).slice(0, 30);
+  box.innerHTML = mine.length ? mine.map(p => {
+    const out = p.dariUnit === unit;
+    return `
+      <div class="flex items-start gap-3 border-b border-slate-100 pb-2 last:border-0">
+        <span class="shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${out ? 'bg-sky-100 text-sky-700' : 'bg-teal-100 text-teal-700'}"><i class="fa-solid ${out ? 'fa-right-from-bracket' : 'fa-right-to-bracket'} text-sm"></i></span>
+        <div class="min-w-0 flex-1">
+          <p class="text-xs"><span class="font-extrabold">${escapeHtml(p.id)}</span> · ${out ? 'Kepada' : 'Daripada'} <b>${escapeHtml(pindahanUnitLabel(out ? p.keUnit : p.dariUnit))}</b> ${pindahanStatusBadge(p)}</p>
+          <p class="text-[13px] text-slate-700 leading-snug">${pindahanItemsText(p)}</p>
+          <p class="text-[11px] text-slate-400">${escapeHtml(formatDate(p.tarikh))}</p>
+        </div>
+        <div class="shrink-0 flex flex-col gap-1">
+          <button type="button" data-id="${escapeHtml(p.id)}" onclick="previewKewPs17(this.dataset.id)" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] px-2.5 py-1.5 rounded-lg"><i class="fa-solid fa-print mr-1"></i>KEW.PS-17</button>
+          ${out && p.status === 'Dihantar' ? `<button type="button" data-id="${escapeHtml(p.id)}" onclick="cancelPindahan(this.dataset.id)" class="bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] px-2.5 py-1.5 rounded-lg">Batal</button>` : ''}
+        </div>
+      </div>`;
+  }).join('') : '<p class="text-center text-sm text-slate-400 py-2">Tiada pindahan lagi.</p>';
+}
+
+// ---- Pentadbir: senarai pindahan & sahkan terima pulangan ----
+function renderAdminPindahan() {
+  const body = document.getElementById('admin-pindahan-body');
+  if (!body || !isAdminLoggedIn) return;
+  const pending = pindahanList.filter(p => p.keUnit === PINDAHAN_DISTRICT && p.status === 'Dihantar').length;
+  const badge = document.getElementById('admin-pulangan-badge');
+  if (badge) {
+    badge.textContent = `${pending} pulangan menunggu`;
+    badge.classList.toggle('hidden', pending === 0);
+  }
+  // Pulangan yang menunggu di atas, kemudian ikut tarikh terkini
+  const list = [...pindahanList].sort((a, b) =>
+    ((b.keUnit === PINDAHAN_DISTRICT && b.status === 'Dihantar') - (a.keUnit === PINDAHAN_DISTRICT && a.status === 'Dihantar'))
+    || String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).slice(0, 100);
+  body.innerHTML = list.length ? list.map(p => {
+    const actions = [
+      `<button type="button" data-id="${escapeHtml(p.id)}" onclick="previewKewPs17(this.dataset.id)" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] px-2 py-1 rounded-lg"><i class="fa-solid fa-print mr-1"></i>KEW.PS-17</button>`,
+      p.keUnit === PINDAHAN_DISTRICT && p.status === 'Dihantar'
+        ? `<button type="button" data-id="${escapeHtml(p.id)}" onclick="confirmPulanganDaerah(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] px-2 py-1 rounded-lg"><i class="fa-solid fa-check mr-1"></i>Sahkan Terima</button>` : '',
+      currentUserRole === 'superadmin' && p.status === 'Dihantar'
+        ? `<button type="button" data-id="${escapeHtml(p.id)}" onclick="cancelPindahan(this.dataset.id)" class="bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] px-2 py-1 rounded-lg">Batal</button>` : ''
+    ].filter(Boolean).join(' ');
+    return `
+      <tr class="${p.keUnit === PINDAHAN_DISTRICT && p.status === 'Dihantar' ? 'bg-amber-50' : 'hover:bg-slate-50'}">
+        <td class="p-3 font-extrabold text-purple-800 whitespace-nowrap">${escapeHtml(p.id)}</td>
+        <td class="p-3 whitespace-nowrap">${escapeHtml(formatDate(p.tarikh))}</td>
+        <td class="p-3">${escapeHtml(pindahanUnitLabel(p.dariUnit))}</td>
+        <td class="p-3 font-bold">${escapeHtml(pindahanUnitLabel(p.keUnit))}</td>
+        <td class="p-3">${pindahanItemsText(p, 3)}</td>
+        <td class="p-3 text-center">${pindahanStatusBadge(p)}</td>
+        <td class="p-3 text-center whitespace-nowrap">${actions}</td>
+      </tr>`;
+  }).join('') : '<tr><td colspan="7" class="p-6 text-center text-slate-400">Tiada pindahan stok lagi.</td></tr>';
+}
+
+// Pulangan ke stor daerah: baki stok induk bertambah
+function confirmPulanganDaerah(pinId) {
+  const p = pindahanList.find(x => x.id === pinId);
+  if (!p || !isAdminLoggedIn || p.keUnit !== PINDAHAN_DISTRICT) return;
+  showConfirmModal('Sahkan Terima Pulangan',
+    `Sahkan penerimaan ${p.id} daripada ${p.dariUnit} (${p.items.length} item)? Baki stok induk akan bertambah mengikut kuantiti yang dipulangkan.`,
+    async () => {
+      const token = showLoadingOverlay(`Merekod pulangan ${p.id}...`);
+      try {
+        await runStockTransaction(async (tx, fresh) => {
+          const pSnap = await tx.get(pindahanRef(p.id));
+          if (!pSnap.exists) throw new Error('Pindahan tidak dijumpai.');
+          const cur = sanitizePindahan(pSnap.data());
+          if (cur.status !== 'Dihantar') throw new Error('Pulangan ini telah diterima atau dibatalkan.');
+          cur.items.forEach(i => {
+            const inv = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
+            // Pulangan direkod dalam unit klinik; stok induk dalam unit stor (qty ÷ faktor)
+            if (inv) inv.baki = toInt(inv.baki) + Math.floor(toInt(i.qty) / Math.max(1, toInt(i.faktor) || 1));
+          });
+          tx.update(pindahanRef(p.id), {
+            status: 'Diterima', penerimaEmail: currentUserEmail,
+            penerimaNama: (currentUserProfile && currentUserProfile.nama) || (currentUserRole === 'superadmin' ? 'SuperAdmin' : currentUserEmail),
+            terimaPada: new Date().toISOString(), terimaQty: cur.items.map(i => toInt(i.qty))
+          });
+        });
+        addAuditLog('Terima Pulangan Stok', `${p.id} daripada ${p.dariUnit} diterima di stor daerah.`);
+        showToast(`Pulangan ${p.id} diterima. Baki stok induk dikemas kini.`, 'success');
+      } catch (err) {
+        showToast('Gagal merekod pulangan: ' + authErrorMessage(err), 'error');
+      } finally {
+        hideLoadingOverlay(token);
+      }
+    });
+}
+
+// ---- KEW.PS-17: Borang Pindahan Stok ----
+function previewKewPs17(pinId) {
+  const p = pindahanList.find(x => x.id === pinId);
+  if (!p) return;
+  const c = 'border border-black px-1.5 py-1.5';
+  const h = `${c} bg-slate-200 font-bold text-center`;
+  const received = p.status === 'Diterima';
+  const penerimaUser = appUsers.find(u => u.id === String(p.penerimaEmail || '').toLowerCase());
+  const penerimaJawatan = penerimaUser ? [penerimaUser.jawatan, penerimaUser.gred].filter(Boolean).join(' ') : '';
+  const sign = (title, nama, jawatan, tarikh) => `
+    <div class="p-3 space-y-0.5">
+      <p class="font-bold">${title}</p>
+      <div class="h-12"></div>
+      <p>……………………………………………</p>
+      <p>(Tandatangan)</p>
+      <p><b>Nama:</b> ${escapeHtml(nama || '')}</p>
+      <p><b>Jawatan:</b> ${escapeHtml(jawatan || '')}</p>
+      <p><b>Tarikh:</b> ${escapeHtml(tarikh || '')}</p>
+    </div>`;
+  const rows = p.items.map((i, idx) => {
+    const terima = received ? toInt(p.terimaQty[idx]) : '';
+    const note = !received ? '' : terima === 0 ? 'Tidak diterima' : terima < toInt(i.qty) ? `Kurang ${toInt(i.qty) - terima}` : '';
+    return `
+      <tr>
+        <td class="${c} text-center">${idx + 1}</td>
+        <td class="${c} break-words">${escapeHtml(i.sku)}</td>
+        <td class="${c} break-words">${escapeHtml(i.nama)}</td>
+        <td class="${c} text-center">${escapeHtml(i.unit || '')}</td>
+        <td class="${c} text-center font-bold">${toInt(i.qty)}</td>
+        <td class="${c} text-center font-bold">${terima}</td>
+        <td class="${c}">${escapeHtml(note)}</td>
+      </tr>`;
+  }).join('');
+  const pad = Array.from({ length: Math.max(0, 10 - p.items.length) }, () => `<tr>${`<td class="${c}">&nbsp;</td>`.repeat(7)}</tr>`).join('');
+
+  dsOpenPreview(`
+    <div class="print-portrait text-black font-sans text-[11px] space-y-3">
+      <div class="flex justify-between text-[10px]"><span>Pekeliling Perbendaharaan Malaysia</span><span>KEW.PS-17</span></div>
+      <div class="text-right font-bold">
+        <p class="text-xs">KEW.PS-17</p>
+        <p>No. BPIN: ${escapeHtml(p.id)}</p>
+      </div>
+      <h2 class="text-center font-bold text-sm">BORANG PINDAHAN STOK</h2>
+      ${p.status === 'Dibatalkan' ? '<p class="text-center font-black text-rose-700">*** DIBATALKAN ***</p>' : ''}
+      <table class="text-[11px]">
+        <tr><td class="font-bold pr-3 py-0.5">Daripada (Stor)</td><td class="px-1">:</td><td>${escapeHtml(pindahanUnitLabel(p.dariUnit))}</td></tr>
+        <tr><td class="font-bold pr-3 py-0.5">Kepada (Stor)</td><td class="px-1">:</td><td>${escapeHtml(pindahanUnitLabel(p.keUnit))}</td></tr>
+        <tr><td class="font-bold pr-3 py-0.5">Tarikh Pindahan</td><td class="px-1">:</td><td>${escapeHtml(formatDate(p.tarikh))}</td></tr>
+        <tr><td class="font-bold pr-3 py-0.5">Tujuan / Catatan</td><td class="px-1">:</td><td>${escapeHtml(p.catatan || (p.keUnit === PINDAHAN_DISTRICT ? 'Pulangan stok ke stor daerah' : '-'))}</td></tr>
+      </table>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:6%"><col style="width:15%"><col style="width:33%"><col style="width:10%"><col style="width:11%"><col style="width:11%"><col style="width:14%"></colgroup>
+        <thead>
+          <tr><th class="${h}">Bil.</th><th class="${h}">No. Kod</th><th class="${h}">Perihal Stok</th><th class="${h}">Unit Pengukuran</th><th class="${h}">Kuantiti Dipindahkan</th><th class="${h}">Kuantiti Diterima</th><th class="${h}">Catatan</th></tr>
+        </thead>
+        <tbody>${rows}${pad}</tbody>
+      </table>
+      <div class="grid grid-cols-2 border border-black">
+        <div class="border-r border-black">${sign('Dikeluarkan oleh (Stor Pemberi):', p.pengirimNama, p.pengirimJawatan, formatDate(p.tarikh))}</div>
+        ${sign('Diterima oleh (Stor Penerima):', received ? p.penerimaNama : '', received ? penerimaJawatan : '', received && p.terimaPada ? formatDate(todayISODateOf(p.terimaPada)) : '')}
+      </div>
+    </div>`);
 }
 
 
@@ -6092,7 +7867,9 @@ function dsItemList(prefix) {
       const inv = items.find(i => String(i.id) === String(it.id));
       return {
         id: String(it.id), sku: it.sku || (inv && inv.sku) || '', nama: it.nama || (inv && inv.nama) || '', unit: it.unitBungkus || (inv && inv.unit) || '',
-        kategori: it.kategori || (inv && inv.kategori) || '', subkategori: inv ? inv.subkategori : '', baki: toInt(it.baki), harga: dsPriceOf(it.id, it.sku), reorder: null, paraMin: null, paraMaks: null
+        // Harga seunit klinik = harga unit stor ÷ bilangan unit klinik (cth: RM 25/Box ÷ 5 = RM 5/Paket)
+        kategori: it.kategori || (inv && inv.kategori) || '', subkategori: inv ? inv.subkategori : '', baki: toInt(it.baki),
+        harga: dsPriceOf(it.id, it.sku) / klinikUnitOf(it.id, it.sku).faktor, reorder: null, paraMin: null, paraMaks: null
       };
     });
   }
@@ -6191,6 +7968,16 @@ function dsDistrictMoves(item) {
       moves.push({ tarikh, sortKey: tarikh + (r.createdAt || ''), ref: r.id, pihak: r.unit || '', masuk: 0, keluar: toInt(i.qtyLulus), pegawai: r.pelulusNama || '' });
     });
   });
+  // Pulangan stok dari klinik (BPIN) yang telah diterima di stor daerah
+  pindahanList.forEach(p => {
+    if (p.keUnit !== PINDAHAN_DISTRICT || p.status !== 'Diterima') return;
+    const tarikh = todayISODateOf(p.terimaPada || p.tarikh);
+    p.items.forEach((i, idx) => {
+      const qty = Math.floor(toInt(p.terimaQty[idx]) / Math.max(1, toInt(i.faktor) || 1)); // unit klinik -> unit stor
+      if (qty <= 0 || !same(i)) return;
+      moves.push({ tarikh, sortKey: tarikh + (p.terimaPada || ''), ref: p.id, pihak: `Pulangan ${p.dariUnit}`, masuk: qty, keluar: 0, pegawai: p.penerimaNama || '' });
+    });
+  });
   return moves.sort((a, b) => a.sortKey.localeCompare(b.sortKey) || String(a.ref).localeCompare(String(b.ref)));
 }
 
@@ -6221,8 +8008,8 @@ function dsKlinikLedger(item, logs) {
     const qty = toInt(i.qty);
     const after = toInt(i.bakiSelepas);
     let masuk = 0, keluar = 0;
-    if (l.jenis === 'terima') masuk = qty;
-    else if (l.jenis === 'keluar' || l.jenis === 'pelarasan') keluar = qty;
+    if (l.jenis === 'terima' || l.jenis === 'pindah_masuk' || l.jenis === 'pindah_batal') masuk = qty;
+    else if (l.jenis === 'keluar' || l.jenis === 'pelarasan' || l.jenis === 'pindah_keluar') keluar = qty;
     if (idx === 0) opening = l.jenis === 'baki_awal' ? 0 : Math.max(0, after - masuk + keluar);
     if (l.jenis === 'baki_awal') {
       // Baki awal menetapkan baki; bezanya direkod sebagai terimaan / keluaran
@@ -6232,7 +8019,7 @@ function dsKlinikLedger(item, logs) {
     prev = after;
     return {
       tarikh: l.tarikh || String(l.createdAt || '').slice(0, 10), ref: l.ref || '-',
-      pihak: l.jenis === 'pelarasan' && l.catatan ? l.catatan : (DS_KLINIK_PIHAK[l.jenis] || l.jenis),
+      pihak: (l.jenis === 'pelarasan' || l.jenis.startsWith('pindah_')) && l.catatan ? l.catatan : (DS_KLINIK_PIHAK[l.jenis] || l.jenis),
       masuk, keluar, baki: after, pegawai: l.userNama || l.userEmail || ''
     };
   });
@@ -6506,5 +8293,6 @@ function renderAll() {
 
 window.onload = function() {
   applyTabStyles();
+  startItemImageWatcher();
   initFirebase();
 };
