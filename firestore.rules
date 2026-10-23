@@ -6,6 +6,7 @@ rules_version = '2';
 // Peranan:
 //   SuperAdmin : pkpkk@moh.gov.my (ditetapkan di sini)
 //   Pelulus    : dokumen kraipro_users/{email} dengan role == 'pelulus'
+//   Penjaga Stor Daerah : role == 'penjaga_daerah' (seperti pelulus, tetapi tidak boleh meluluskan permohonan)
 //   Pemohon    : dokumen kraipro_users/{email} dengan role == 'pemohon'
 // Semua pengguna mesti log masuk (Firebase Auth) dan telah mengesahkan e-mel.
 // Apa-apa laluan yang tidak disenaraikan di bawah adalah DITOLAK.
@@ -32,7 +33,12 @@ service cloud.firestore {
     function isMember() {
       return isSuper() || isListed();
     }
-    function isApprover() {
+    // Kakitangan stor daerah: Pelulus & Penjaga Stor Daerah (urus stok, LPO, pindahan, dsb.)
+    function isStaff() {
+      return isSuper() || (isListed() && get(profilePath()).data.role in ['pelulus', 'penjaga_daerah']);
+    }
+    // Hanya SuperAdmin & Pegawai Pelulus boleh meluluskan / menolak permohonan stok
+    function isPelulus() {
       return isSuper() || (isListed() && get(profilePath()).data.role == 'pelulus');
     }
     // Penjaga stor klinik: ditanda oleh SuperAdmin (penjagaStor == true) dengan Unit/Klinik dalam profil
@@ -51,7 +57,7 @@ service cloud.firestore {
       allow read: if isMember();
       // lpoList lama (sebelum LPO dipindahkan ke koleksi sendiri) tidak boleh ditambah/diubah lagi;
       // hanya boleh kekal sama atau dibuang. Ini menghalang tab lama menulis semula senarai LPO.
-      allow create, update: if isApprover()
+      allow create, update: if isStaff()
         && request.resource.data.items is list
         && (!('lpoList' in request.resource.data)
             || (resource != null && 'lpoList' in resource.data
@@ -62,19 +68,19 @@ service cloud.firestore {
     // Gambar item (satu dokumen setiap item; gambar JPEG dimampatkan dalam pelayar, had ~200 KB)
     match /kraipro_item_images/{itemId} {
       allow read: if isMember();
-      allow create, update: if isApprover()
+      allow create, update: if isStaff()
         && request.resource.data.keys().hasOnly(['data', 'v', 'dikemaskiniPada', 'dikemaskiniOleh'])
         && request.resource.data.data is string
         && request.resource.data.data.size() <= 200000
         && request.resource.data.data.matches('^data:image/(jpeg|webp|png);base64,[A-Za-z0-9+/=]+$')
         && request.resource.data.v is int;
-      allow delete: if isApprover();
+      allow delete: if isStaff();
     }
 
     // Pesanan LPO (satu dokumen setiap LPO) - pelulus & SuperAdmin sahaja
     match /kraipro_lpo/{lpoId} {
-      allow read: if isApprover();
-      allow create, update: if isApprover()
+      allow read: if isStaff();
+      allow create, update: if isStaff()
         && request.resource.data.no is string
         && request.resource.data.items is list;
       allow delete: if isSuper();
@@ -87,7 +93,7 @@ service cloud.firestore {
       allow create, update: if isSuper()
         && email == email.lower()
         && request.resource.data.email == email
-        && request.resource.data.role in ['pelulus', 'pemohon'];
+        && request.resource.data.role in ['pelulus', 'penjaga_daerah', 'pemohon'];
       allow delete: if isSuper();
     }
 
@@ -123,7 +129,7 @@ service cloud.firestore {
 
     // Permohonan stok (satu dokumen setiap permohonan)
     match /kraipro_requests/{reqId} {
-      allow read: if isApprover()
+      allow read: if isStaff()
         || (isMember() && (resource == null || resource.data.ownerEmail == myEmail()))
         || (resource != null && isPenjagaOf(resource.data.unit));
 
@@ -138,8 +144,9 @@ service cloud.firestore {
             && request.resource.data.items.size() > 0
             && request.resource.data.items.size() <= 100);
 
-      // Pelulus/SuperAdmin boleh proses; pemohon hanya boleh batalkan permohonan sendiri yang masih Pending
-      allow update: if isApprover()
+      // Pelulus/SuperAdmin boleh proses (lulus/tolak/batal); Penjaga Stor Daerah tidak boleh meluluskan.
+      // Pemohon hanya boleh batalkan permohonan sendiri yang masih Pending
+      allow update: if isPelulus()
         || (isMember()
             && resource.data.ownerEmail == myEmail()
             && resource.data.status == 'Pending'
@@ -161,7 +168,7 @@ service cloud.firestore {
     match /kraipro_klinik/{klinikId} {
       // Pelulus: semua klinik. Penjaga & staf klinik: klinik sendiri sahaja (staf biasa baca sahaja,
       // untuk melihat baki & penggunaan klinik semasa membuat permohonan)
-      allow read: if isApprover()
+      allow read: if isStaff()
         || (isListed() && myUnit() != '' && (resource == null || resource.data.unit == myUnit()));
       allow create: if (isSuper() || isPenjagaOf(request.resource.data.unit))
         && request.resource.data.unit is string
@@ -178,8 +185,8 @@ service cloud.firestore {
 
     // Log pergerakan stok klinik (tambah sahaja): terima, keluar, baki awal, pelarasan
     match /kraipro_klinik_log/{logId} {
-      allow read: if isApprover() || (resource != null && isPenjagaOf(resource.data.unit));
-      allow create: if (isApprover() || isPenjagaOf(request.resource.data.unit))
+      allow read: if isStaff() || (resource != null && isPenjagaOf(resource.data.unit));
+      allow create: if (isStaff() || isPenjagaOf(request.resource.data.unit))
         && request.resource.data.userEmail == myEmail()
         && request.resource.data.jenis in ['terima', 'keluar', 'baki_awal', 'pelarasan', 'pindah_keluar', 'pindah_masuk', 'pindah_batal']
         && request.resource.data.bulan is string
@@ -191,7 +198,7 @@ service cloud.firestore {
 
     // Pindahan stok (KEW.PS-17 / BPIN): klinik ke klinik, atau pulangan klinik ke stor daerah ('Stor Daerah')
     match /kraipro_pindahan/{pinId} {
-      allow read: if isApprover()
+      allow read: if isStaff()
         || (isPenjaga() && (resource == null
             || isPenjagaOf(resource.data.dariUnit) || isPenjagaOf(resource.data.keUnit)));
       // Dicipta oleh penjaga stor klinik pemberi
@@ -207,7 +214,7 @@ service cloud.firestore {
         && request.resource.data.items.size() <= 100;
       allow update: if
         // Pelulus/SuperAdmin: sahkan terima pulangan ke stor daerah; SuperAdmin juga boleh batalkan
-        isApprover()
+        isStaff()
         // Klinik penerima sahkan terima
         || (resource.data.status == 'Dihantar'
             && isPenjagaOf(resource.data.keUnit)
@@ -227,14 +234,14 @@ service cloud.firestore {
     // Ringkasan stok dikeluarkan (diluluskan) kepada setiap unit/klinik bagi setahun: { unit, tahun, items: { itemId: kuantiti } }
     // Dijana semula oleh pelulus/SuperAdmin daripada permohonan; staf unit baca ringkasan unit sendiri sahaja.
     match /kraipro_unit_usage/{uid} {
-      allow read: if isApprover()
+      allow read: if isStaff()
         || (isListed() && myUnit() != '' && (resource == null || resource.data.unit == myUnit()));
-      allow create, update: if isApprover()
+      allow create, update: if isStaff()
         && request.resource.data.keys().hasOnly(['unit', 'tahun', 'items', 'dikemaskiniPada'])
         && request.resource.data.unit is string
         && request.resource.data.tahun is string
         && request.resource.data.items is map;
-      allow delete: if isApprover();
+      allow delete: if isStaff();
     }
 
     // Permohonan item baharu (item yang tiada dalam Stok Induk)
@@ -242,7 +249,7 @@ service cloud.firestore {
       return request.resource.data[field] is string && request.resource.data[field].size() <= maxLen;
     }
     match /kraipro_item_baharu/{nid} {
-      allow read: if isApprover() || (isMember() && resource != null && resource.data.ownerEmail == myEmail());
+      allow read: if isStaff() || (isMember() && resource != null && resource.data.ownerEmail == myEmail());
       allow create: if isMember()
         && request.resource.data.ownerEmail == myEmail()
         && request.resource.data.status == 'Baru'
@@ -253,7 +260,7 @@ service cloud.firestore {
         && validNewItemText('justifikasi', 500) && request.resource.data.justifikasi.size() > 0
         && validNewItemText('unitUkuran', 30)
         && request.resource.data.kuantiti is int && request.resource.data.kuantiti > 0;
-      allow update: if isApprover()
+      allow update: if isStaff()
         // Pemohon boleh membatalkan permohonan sendiri yang masih baharu
         || (isMember()
             && resource.data.ownerEmail == myEmail()
@@ -277,7 +284,7 @@ service cloud.firestore {
 
     // Log jejak audit (tambah sahaja; tidak boleh diubah)
     match /kraipro_audit/{logId} {
-      allow read: if isApprover();
+      allow read: if isStaff();
       allow create: if isSuper() || (isMember() && request.resource.data.userEmail == myEmail());
       allow update: if false;
       allow delete: if isSuper();

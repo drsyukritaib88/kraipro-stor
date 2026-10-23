@@ -1707,7 +1707,7 @@
 
   <!-- MODAL: PEGAWAI PELULUS -->
   <div id="approver-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4 max-h-[92vh] overflow-y-auto">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3">
         <h3 id="approver-modal-title" class="text-base font-black text-slate-800">Tambah Pengguna</h3>
         <button type="button" onclick="closeApproverModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
@@ -1752,6 +1752,7 @@
           <select id="modal-approver-role" onchange="onApproverRoleChange()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
             <option value="pemohon">Pemohon (mohon stok sahaja)</option>
             <option value="pelulus">Pegawai Pelulus (luluskan &amp; urus stok)</option>
+            <option value="penjaga_daerah">Penjaga Stor Daerah (urus stok, tidak meluluskan)</option>
           </select>
         </div>
         <div id="modal-approver-cats-wrap">
@@ -1938,7 +1939,7 @@
 
   <!-- MODAL: PEMBEKAL -->
   <div id="pembekal-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-md w-full p-6 space-y-4 max-h-[92vh] overflow-y-auto">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3">
         <h3 id="pembekal-modal-title" class="text-base font-black text-slate-800">Tambah Pembekal Baru</h3>
         <button type="button" onclick="closePembekalModal()" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
@@ -1974,7 +1975,7 @@
 
   <!-- MODAL: CONFIRMATION -->
   <div id="confirm-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 text-center space-y-4">
+    <div class="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 text-center space-y-4 max-h-[92vh] overflow-y-auto">
       <div class="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-xl">
         <i class="fa-solid fa-circle-question"></i>
       </div>

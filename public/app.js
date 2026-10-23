@@ -793,7 +793,7 @@ function validateBackup(obj) {
   if (badLpo) throw new Error('Terdapat LPO tidak sah dalam sandaran.');
   const badReq = d.requests.find(r => !r || !SAFE_ID_RE.test(String(r.id || '')));
   if (badReq) throw new Error('Terdapat permohonan dengan ID tidak sah dalam sandaran.');
-  const badUser = d.users.find(u => !u || !u.id || u.id !== String(u.id).toLowerCase() || u.email !== u.id || !['pelulus', 'pemohon'].includes(u.role));
+  const badUser = d.users.find(u => !u || !u.id || u.id !== String(u.id).toLowerCase() || u.email !== u.id || !['pelulus', 'penjaga_daerah', 'pemohon'].includes(u.role));
   if (badUser) throw new Error(`Rekod pengguna tidak sah dalam sandaran (${badUser && badUser.id}).`);
   return obj;
 }
@@ -1414,7 +1414,7 @@ async function handleAuthStateChanged(user) {
       const snap = await db.collection('kraipro_users').doc(email).get();
       if (snap.exists) {
         profile = snap.data();
-        role = profile.role === 'pelulus' ? 'pelulus' : 'pemohon';
+        role = ['pelulus', 'penjaga_daerah'].includes(profile.role) ? profile.role : 'pemohon';
       }
     } catch (err) {
       console.warn('Semakan pendaftaran gagal:', err);
@@ -1433,9 +1433,10 @@ async function handleAuthStateChanged(user) {
   currentUserEmail = email;
   currentUserRole = role;
   currentUserProfile = profile;
-  isAdminLoggedIn = role === 'superadmin' || role === 'pelulus';
+  // Panel Pentadbir: SuperAdmin, Pegawai Pelulus & Penjaga Stor Daerah (yang terakhir tidak boleh meluluskan)
+  isAdminLoggedIn = role === 'superadmin' || role === 'pelulus' || role === 'penjaga_daerah';
   currentApproverData = role === 'pelulus' ? profile : null;
-  currentUserAllowedCategories = role === 'superadmin' ? ['all'] : (role === 'pelulus' ? (profile.allowedCategories || []) : []);
+  currentUserAllowedCategories = role === 'superadmin' || role === 'penjaga_daerah' ? ['all'] : (role === 'pelulus' ? (profile.allowedCategories || []) : []);
 
   showAuthGate(false);
   prefillRequesterForm();
@@ -1758,6 +1759,7 @@ function updateAdminStatusUI() {
   if (roleTextEl) {
     roleTextEl.innerText = currentUserRole === 'superadmin' ? 'SuperAdmin'
       : currentUserRole === 'pelulus' ? 'Pegawai Pelulus'
+      : currentUserRole === 'penjaga_daerah' ? 'Penjaga Stor Daerah'
       : 'Pemohon';
   }
 
@@ -1809,8 +1811,9 @@ function renderApproversTable() {
     return;
   }
 
+  const roleOrder = { pelulus: 0, penjaga_daerah: 1, pemohon: 2 };
   const sorted = [...appUsers].sort((a, b) =>
-    (a.role === b.role ? 0 : (a.role === 'pelulus' ? -1 : 1)) || String(a.nama || '').localeCompare(String(b.nama || ''))
+    ((roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2)) || String(a.nama || '').localeCompare(String(b.nama || ''))
   );
 
   tbody.innerHTML = sorted.map(a => {
@@ -1820,6 +1823,8 @@ function renderApproversTable() {
       : '';
     const roleBadge = (isPelulus
       ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800">Pelulus</span>'
+      : a.role === 'penjaga_daerah'
+      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 text-sky-800">Penjaga Stor Daerah</span>'
       : '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-200 text-slate-700">Pemohon</span>')
       + (a.penjagaStor && a.unit ? '<span class="block mt-1 w-fit px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800"><i class="fa-solid fa-house-medical mr-0.5"></i>Penjaga Stor</span>' : '');
     return `
@@ -1869,7 +1874,7 @@ function openApproverModal(userId = null) {
     setVal('modal-approver-nama', u.nama || '');
     setVal('modal-approver-jawatan', u.jawatan || '');
     setVal('modal-approver-email', u.email || u.id);
-    setVal('modal-approver-role', u.role === 'pelulus' ? 'pelulus' : 'pemohon');
+    setVal('modal-approver-role', ['pelulus', 'penjaga_daerah'].includes(u.role) ? u.role : 'pemohon');
     setSelectValue(gredSel, u.gred || '');
     setSelectValue(unitSel, u.unit || '');
     if (penjagaCb) penjagaCb.checked = !!u.penjagaStor;
@@ -1910,7 +1915,8 @@ async function saveApprover() {
   const nama = document.getElementById('modal-approver-nama')?.value.trim();
   const jawatan = document.getElementById('modal-approver-jawatan')?.value.trim();
   const email = document.getElementById('modal-approver-email')?.value.trim().toLowerCase();
-  const role = document.getElementById('modal-approver-role')?.value === 'pelulus' ? 'pelulus' : 'pemohon';
+  const roleVal = document.getElementById('modal-approver-role')?.value;
+  const role = ['pelulus', 'penjaga_daerah'].includes(roleVal) ? roleVal : 'pemohon';
   const gred = document.getElementById('modal-approver-gred')?.value || '';
   const unit = document.getElementById('modal-approver-unit')?.value || '';
   const penjagaStor = !!document.getElementById('modal-approver-penjaga')?.checked;
@@ -1971,7 +1977,7 @@ async function saveApprover() {
     }
     await batch.commit();
 
-    const roleLabel = role === 'pelulus' ? 'Pegawai Pelulus' : 'Pemohon';
+    const roleLabel = role === 'pelulus' ? 'Pegawai Pelulus' : role === 'penjaga_daerah' ? 'Penjaga Stor Daerah' : 'Pemohon';
     addAuditLog(oldId ? "Kemaskini Pengguna" : "Tambah Pengguna", `${oldId ? 'Mengemaskini' : 'Mendaftarkan'} ${roleLabel} ${nama} (${email}).`);
     closeApproverModal();
     showToast('Maklumat pengguna berjaya disimpan!', 'success');
@@ -3430,7 +3436,9 @@ function renderAdminRequests() {
           <td class="p-2">${escapeHtml(i.nama)}${klinikUsageHtml(klinikItemKey(i), r.unit, true)}</td>
           <td class="p-2 text-center font-bold">${toInt(i.qtyMohon)}</td>
           <td class="p-2 text-center">
-            <input type="number" id="admin-approve-qty-${r.id}-${idx}" min="0" max="${toInt(i.qtyMohon)}" value="${toInt(i.qtyMohon)}" class="w-16 p-1 border border-slate-300 rounded text-center text-xs font-bold">
+            ${canApproveRequests()
+              ? `<input type="number" id="admin-approve-qty-${r.id}-${idx}" min="0" max="${toInt(i.qtyMohon)}" value="${toInt(i.qtyMohon)}" class="w-16 p-1 border border-slate-300 rounded text-center text-xs font-bold">`
+              : '<span class="text-slate-400">-</span>'}
           </td>
         </tr>
       `).join('');
@@ -3457,8 +3465,10 @@ function renderAdminRequests() {
           </table>
         </div>
         <div class="flex items-center justify-end gap-2 pt-2">
+          ${canApproveRequests() ? `
           <button type="button" data-id="${escapeHtml(r.id)}" onclick="rejectRequest(this.dataset.id)" class="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-lg"><i class="fa-solid fa-xmark mr-1"></i> Tolak</button>
-          <button type="button" data-id="${escapeHtml(r.id)}" onclick="approveRequest(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2 rounded-lg shadow"><i class="fa-solid fa-check mr-1"></i> Luluskan</button>
+          <button type="button" data-id="${escapeHtml(r.id)}" onclick="approveRequest(this.dataset.id)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2 rounded-lg shadow"><i class="fa-solid fa-check mr-1"></i> Luluskan</button>`
+          : '<span class="text-[11px] font-bold text-slate-500"><i class="fa-solid fa-hourglass-half mr-1"></i>Menunggu kelulusan Pegawai Pelulus</span>'}
         </div>
       `;
       pendingCont.appendChild(card);
@@ -3468,9 +3478,14 @@ function renderAdminRequests() {
   renderRequestHistory('hist-admin', completed);
 }
 
+// Hanya SuperAdmin & Pegawai Pelulus boleh meluluskan / menolak permohonan (bukan Penjaga Stor Daerah)
+function canApproveRequests() {
+  return currentUserRole === 'superadmin' || currentUserRole === 'pelulus';
+}
+
 function approveRequest(reqId) {
   const req = requests.find(r => r.id === reqId);
-  if (!req || !isAdminLoggedIn) return;
+  if (!req || !canApproveRequests()) return;
 
   let pelulusNama = "SuperAdmin Utama";
   let pelulusJawatan = "Pentadbir Sistem";
@@ -3533,7 +3548,7 @@ function approveRequest(reqId) {
 
 function rejectRequest(reqId) {
   const req = requests.find(r => r.id === reqId);
-  if (!req || !isAdminLoggedIn) return;
+  if (!req || !canApproveRequests()) return;
 
   showConfirmModal('Tolak Permohonan', `Adakah anda pasti mahu menolak permohonan ${req.id}?`, async () => {
     showLoadingOverlay(`Menolak permohonan ${req.id}...`);
