@@ -6,7 +6,7 @@ rules_version = '2';
 // Peranan:
 //   SuperAdmin : pkpkk@moh.gov.my (ditetapkan di sini)
 //   Pelulus    : dokumen kraipro_users/{email} dengan role == 'pelulus'
-//   Penjaga Stor Daerah : role == 'penjaga_daerah' (seperti pelulus, tetapi tidak boleh meluluskan permohonan)
+//   Pegawai Stor : role == 'penjaga_daerah' (seperti pelulus, tetapi tidak boleh meluluskan permohonan)
 //   Pemohon    : dokumen kraipro_users/{email} dengan role == 'pemohon'
 // Semua pengguna mesti log masuk (Firebase Auth) dan telah mengesahkan e-mel.
 // Apa-apa laluan yang tidak disenaraikan di bawah adalah DITOLAK.
@@ -33,7 +33,7 @@ service cloud.firestore {
     function isMember() {
       return isSuper() || isListed();
     }
-    // Kakitangan stor daerah: Pelulus & Penjaga Stor Daerah (urus stok, LPO, pindahan, dsb.)
+    // Kakitangan stor daerah: Pelulus & Pegawai Stor (urus stok, LPO, pindahan, dsb.)
     function isStaff() {
       return isSuper() || (isListed() && get(profilePath()).data.role in ['pelulus', 'penjaga_daerah']);
     }
@@ -144,7 +144,7 @@ service cloud.firestore {
             && request.resource.data.items.size() > 0
             && request.resource.data.items.size() <= 100);
 
-      // Pelulus/SuperAdmin boleh proses (lulus/tolak/batal); Penjaga Stor Daerah tidak boleh meluluskan.
+      // Pelulus/SuperAdmin boleh proses (lulus/tolak/batal); Pegawai Stor tidak boleh meluluskan.
       // Pemohon hanya boleh batalkan permohonan sendiri yang masih Pending
       allow update: if isPelulus()
         || (isMember()
@@ -173,9 +173,14 @@ service cloud.firestore {
       allow create: if (isSuper() || isPenjagaOf(request.resource.data.unit))
         && request.resource.data.unit is string
         && request.resource.data.items is map;
-      // Baki awal yang telah dikunci hanya boleh dibuka semula oleh SuperAdmin
+      // Baki awal yang telah dikunci hanya boleh dibuka semula oleh SuperAdmin atau Pegawai Pelulus
+      // (pelulus: buka kunci sahaja; tidak boleh mengubah baki item)
       allow update: if request.resource.data.items is map
         && (isSuper()
+            || (isPelulus()
+                && request.resource.data.get('bakiAwalDikunci', true) == false
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly(['bakiAwalDikunci', 'bakiAwalDibukaPada', 'bakiAwalDibukaOleh']))
             || (isPenjagaOf(resource.data.unit)
                 && request.resource.data.unit == resource.data.unit
                 && (resource.data.get('bakiAwalDikunci', false) == false

@@ -288,7 +288,10 @@ function startFirestoreListeners() {
     appUsers = qs.docs.map(d => ({ id: d.id, ...d.data() }));
     approverUsers = appUsers.filter(u => u.role === 'pelulus');
     renderApproversTable();
-    if (currentUserRole === 'superadmin') syncAllowlist();
+    if (currentUserRole === 'superadmin') {
+      syncAllowlist();
+      uppercaseExistingUserNames();
+    }
   }, onFirestoreError('pengguna')));
 
   // Permohonan akses (SuperAdmin sahaja)
@@ -429,6 +432,20 @@ async function syncAllowlist() {
   } finally {
     allowlistSyncRunning = false;
   }
+}
+
+// Nama pengguna disimpan dalam huruf besar; tukar nama sedia ada sekali (SuperAdmin sahaja)
+let userNameFixDone = false;
+async function uppercaseExistingUserNames() {
+  if (userNameFixDone || currentUserRole !== 'superadmin' || appUsers.length === 0) return;
+  userNameFixDone = true;
+  const toFix = appUsers.filter(u => typeof u.nama === 'string' && u.nama !== u.nama.toUpperCase());
+  if (toFix.length === 0) return;
+  // Satu demi satu: rekod yang bermasalah tidak menghalang rekod lain
+  const results = await Promise.allSettled(toFix.map(u => db.collection('kraipro_users').doc(u.id).update({ nama: u.nama.toUpperCase() })));
+  const ok = results.filter(r => r.status === 'fulfilled').length;
+  results.forEach((r, i) => { if (r.status === 'rejected') console.warn(`Gagal menukar nama ${toFix[i].id} kepada huruf besar:`, r.reason); });
+  if (ok) addAuditLog('Nama Pengguna Huruf Besar', `${ok} nama pengguna ditukar kepada huruf besar.`);
 }
 
 // Pulangkan Promise<boolean>: true jika berjaya disimpan ke Cloud
@@ -1058,7 +1075,9 @@ function importItemsFromCSV(event) {
           };
 
           if (existingIdx !== -1) {
-            items[existingIdx] = newItem;
+            // Kekalkan medan yang tiada dalam CSV (batch tarikh luput, gambar, padanan PO, lokasi, dsb.)
+            items[existingIdx] = { ...existing, ...newItem };
+            trimBatchesToBaki(items[existingIdx]);
           } else {
             items.push(newItem);
           }
@@ -1370,6 +1389,7 @@ function resetSessionState() {
   resetKlinikState();
   newItemRequests = [];
   pendingNewItemLink = '';
+  userNameFixDone = false;
   unitUsageDocs = {};
   requestsRecentLoaded = false;
   unitUsageLoaded = false;
@@ -1433,7 +1453,7 @@ async function handleAuthStateChanged(user) {
   currentUserEmail = email;
   currentUserRole = role;
   currentUserProfile = profile;
-  // Panel Pentadbir: SuperAdmin, Pegawai Pelulus & Penjaga Stor Daerah (yang terakhir tidak boleh meluluskan)
+  // Panel Pentadbir: SuperAdmin, Pegawai Pelulus & Pegawai Stor (yang terakhir tidak boleh meluluskan)
   isAdminLoggedIn = role === 'superadmin' || role === 'pelulus' || role === 'penjaga_daerah';
   currentApproverData = role === 'pelulus' ? profile : null;
   currentUserAllowedCategories = role === 'superadmin' || role === 'penjaga_daerah' ? ['all'] : (role === 'pelulus' ? (profile.allowedCategories || []) : []);
@@ -1529,7 +1549,7 @@ async function submitAccessRequest() {
   const val = (id) => (document.getElementById(id)?.value || '').trim();
   const data = {
     email,
-    nama: val('access-nama'),
+    nama: val('access-nama').toUpperCase(),
     jawatan: val('access-jawatan'),
     gred: val('access-gred'),
     unit: val('access-unit'),
@@ -1759,7 +1779,7 @@ function updateAdminStatusUI() {
   if (roleTextEl) {
     roleTextEl.innerText = currentUserRole === 'superadmin' ? 'SuperAdmin'
       : currentUserRole === 'pelulus' ? 'Pegawai Pelulus'
-      : currentUserRole === 'penjaga_daerah' ? 'Penjaga Stor Daerah'
+      : currentUserRole === 'penjaga_daerah' ? 'Pegawai Stor'
       : 'Pemohon';
   }
 
@@ -1824,7 +1844,7 @@ function renderApproversTable() {
     const roleBadge = (isPelulus
       ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800">Pelulus</span>'
       : a.role === 'penjaga_daerah'
-      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 text-sky-800">Penjaga Stor Daerah</span>'
+      ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 text-sky-800">Pegawai Stor</span>'
       : '<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-200 text-slate-700">Pemohon</span>')
       + (a.penjagaStor && a.unit ? '<span class="block mt-1 w-fit px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800"><i class="fa-solid fa-house-medical mr-0.5"></i>Penjaga Stor</span>' : '');
     return `
@@ -1912,7 +1932,7 @@ async function saveApprover() {
   }
 
   const oldId = document.getElementById('modal-approver-id')?.value;
-  const nama = document.getElementById('modal-approver-nama')?.value.trim();
+  const nama = (document.getElementById('modal-approver-nama')?.value || '').trim().replace(/\s+/g, ' ').toUpperCase();
   const jawatan = document.getElementById('modal-approver-jawatan')?.value.trim();
   const email = document.getElementById('modal-approver-email')?.value.trim().toLowerCase();
   const roleVal = document.getElementById('modal-approver-role')?.value;
@@ -1977,7 +1997,7 @@ async function saveApprover() {
     }
     await batch.commit();
 
-    const roleLabel = role === 'pelulus' ? 'Pegawai Pelulus' : role === 'penjaga_daerah' ? 'Penjaga Stor Daerah' : 'Pemohon';
+    const roleLabel = role === 'pelulus' ? 'Pegawai Pelulus' : role === 'penjaga_daerah' ? 'Pegawai Stor' : 'Pemohon';
     addAuditLog(oldId ? "Kemaskini Pengguna" : "Tambah Pengguna", `${oldId ? 'Mengemaskini' : 'Mendaftarkan'} ${roleLabel} ${nama} (${email}).`);
     closeApproverModal();
     showToast('Maklumat pengguna berjaya disimpan!', 'success');
@@ -3478,7 +3498,7 @@ function renderAdminRequests() {
   renderRequestHistory('hist-admin', completed);
 }
 
-// Hanya SuperAdmin & Pegawai Pelulus boleh meluluskan / menolak permohonan (bukan Penjaga Stor Daerah)
+// Hanya SuperAdmin & Pegawai Pelulus boleh meluluskan / menolak permohonan (bukan Pegawai Stor)
 function canApproveRequests() {
   return currentUserRole === 'superadmin' || currentUserRole === 'pelulus';
 }
@@ -3515,13 +3535,16 @@ function approveRequest(reqId) {
           // Kuantiti lulus tidak boleh melebihi baki stok sebenar (elak stok "palsu" bila dibatalkan)
           const invItem = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
           let bakiSediaAda = null;
+          let batchKeluar = [];
           if (invItem) {
             bakiSediaAda = parseInt(invItem.baki) || 0;
             approvedQty = Math.min(approvedQty, Math.max(0, bakiSediaAda));
+            // MDKD: tolak daripada batch luput terawal (sebelum baki dikurangkan)
+            if (approvedQty > 0 && batchesOf(invItem).length) batchKeluar = deductFefo(invItem, approvedQty);
             invItem.baki = bakiSediaAda - approvedQty;
           }
 
-          return { ...i, qtyLulus: approvedQty, bakiSediaAda, status: approvedQty > 0 ? 'Lulus' : 'Ditolak' };
+          return { ...i, qtyLulus: approvedQty, bakiSediaAda, status: approvedQty > 0 ? 'Lulus' : 'Ditolak', ...(batchKeluar.length ? { batchKeluar } : {}) };
         });
 
         tx.update(requestRef(req.id), {
@@ -3597,7 +3620,10 @@ function cancelApprovedRequest(reqId) {
         const newItems = (r.items || []).map(i => {
           if (i.status === 'Lulus' && (i.qtyLulus || 0) > 0) {
             const invItem = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
-            if (invItem) invItem.baki = (parseInt(invItem.baki) || 0) + i.qtyLulus; // Auto-Refund baki stok
+            if (invItem) {
+              invItem.baki = (parseInt(invItem.baki) || 0) + i.qtyLulus; // Auto-Refund baki stok
+              if (Array.isArray(i.batchKeluar)) restoreAllocations(invItem, i.batchKeluar); // kembali ke batch asal
+            }
           }
           return { ...i, status: 'Dibatalkan' };
         });
@@ -3708,6 +3734,23 @@ function openItemModal(itemId = null) {
   const ukList = document.getElementById('modal-item-unit-klinik-list');
   if (ukList) ukList.innerHTML = [...new Set(['Paket', 'Pcs', 'Biji', 'Helai', ...packagingUnits])].map(u => `<option value="${escapeHtml(u)}"></option>`).join('');
   updateItemUnitKlinikNote();
+
+  const luputEl = document.getElementById('modal-item-luput');
+  if (luputEl) luputEl.checked = !!(editing && editing.bertarikhLuput);
+  const lokasiEl = document.getElementById('modal-item-lokasi');
+  if (lokasiEl) lokasiEl.value = (editing && editing.lokasi) || '';
+  const batchBox = document.getElementById('modal-item-batch-list');
+  if (batchBox) {
+    const live = editing ? fefoSorted(batchesOf(editing).filter(b => toInt(b.baki) > 0)) : [];
+    const legacy = editing ? Math.max(0, toInt(editing.baki) - batchTotal(editing)) : 0;
+    batchBox.innerHTML = live.length ? `
+      <p class="font-bold text-slate-700 mb-1">Baki mengikut tarikh luput:</p>
+      <div class="space-y-1">${live.map(b => `<div class="flex items-center justify-between gap-2 bg-white border border-rose-100 rounded-lg px-2 py-1">
+        <span><b>${escapeHtml(formatDate(b.luput))}</b>${b.noBatch ? ` · Batch ${escapeHtml(b.noBatch)}` : ''} ${expiryBadgeHtml(daysUntil(b.luput))}</span>
+        <span class="font-black">${toInt(b.baki)} ${escapeHtml(editing.unit || '')}</span></div>`).join('')}
+        ${legacy ? `<div class="text-slate-500 px-2">+ ${legacy} ${escapeHtml(editing.unit || '')} stok lama tanpa rekod tarikh luput</div>` : ''}
+      </div>` : '';
+  }
 
   updateItemUsageNote(editing);
   prepareItemImageEditor(editing);
@@ -3867,7 +3910,9 @@ async function saveItem() {
   const itemData = {
     id: id || String(Date.now()),
     sku, nama, kategori: kat, subkategori: subkat, unit, harga, reorder, paraMin, paraMaks, baki,
-    unitKlinik, faktorKlinik
+    unitKlinik, faktorKlinik,
+    bertarikhLuput: !!document.getElementById('modal-item-luput')?.checked,
+    lokasi: (document.getElementById('modal-item-lokasi')?.value || '').trim().slice(0, 60)
   };
 
   // Gambar disimpan dahulu (dokumen berasingan); versi baharu direkod pada item
@@ -3883,7 +3928,10 @@ async function saveItem() {
 
   if (id) {
     const item = items.find(i => String(i.id) === String(id));
-    if (item) Object.assign(item, itemData);
+    if (item) {
+      Object.assign(item, itemData);
+      trimBatchesToBaki(item); // baki dikurangkan secara manual: batch luput terawal dikurangkan dahulu
+    }
     addAuditLog("Kemaskini Item", `Item [${sku}] ${nama} dikemaskini.`);
   } else {
     items.push(itemData);
@@ -4214,7 +4262,7 @@ let isSubmittingRequest = false;
 async function submitRequest() {
   if (isSubmittingRequest) return; // abaikan klik berulang semasa permohonan sedang dihantar
 
-  const nama = document.getElementById('req-nama')?.value.trim();
+  const nama = (document.getElementById('req-nama')?.value || '').trim().replace(/\s+/g, ' ').toUpperCase();
   const jawatan = document.getElementById('req-jawatan')?.value.trim();
   const gred = document.getElementById('req-gred')?.value.trim();
   const unit = document.getElementById('req-unit')?.value;
@@ -5246,7 +5294,15 @@ function confirmLpoReceipt(lpoId) {
     return `
       <tr class="border-b border-slate-100" data-idx="${idx}">
         <td class="p-2 font-black whitespace-nowrap">${escapeHtml(i.sku)}</td>
-        <td class="p-2 font-semibold">${escapeHtml(i.nama)}</td>
+        <td class="p-2 font-semibold">${escapeHtml(i.nama)}
+          ${inv && inv.bertarikhLuput ? `
+          <div class="mt-1 flex flex-wrap gap-1 items-center bg-rose-50 border border-rose-200 rounded-lg p-1.5">
+            <label class="text-[10px] font-bold text-rose-800">Tarikh luput <span class="text-rose-600">*</span>
+              <input type="date" class="btb-luput block ${input} py-1 border-rose-300"></label>
+            <label class="text-[10px] font-bold text-slate-600">No. Batch
+              <input type="text" maxlength="40" class="btb-batch block w-28 ${input} py-1" placeholder="(pilihan)"></label>
+          </div>` : ''}
+        </td>
         <td class="p-2 text-center">${escapeHtml(i.unit || (inv && inv.unit) || '')}</td>
         <td class="p-2 text-center font-bold">${qty}</td>
         <td class="p-2"><input type="number" min="0" value="${qty}" class="btb-qty-do w-20 text-center ${input}"></td>
@@ -5349,12 +5405,18 @@ async function confirmBtbReceipt() {
     const i = lpo.items[parseInt(tr.dataset.idx)];
     return {
       itemId: i.itemId, sku: i.sku, nama: i.nama, unit: i.unit || '',
+      hargaPO: i.harga !== undefined && i.harga !== null && i.harga !== '' ? (parseFloat(i.harga) || 0) : null,
       dipesan: toInt(i.qty),
       qtyDO: Math.max(0, toInt(tr.querySelector('.btb-qty-do').value)),
       diterima: Math.max(0, toInt(tr.querySelector('.btb-qty-terima').value)),
-      catatan: tr.querySelector('.btb-catatan').value.trim()
+      catatan: tr.querySelector('.btb-catatan').value.trim(),
+      luput: tr.querySelector('.btb-luput') ? tr.querySelector('.btb-luput').value : '',
+      noBatch: tr.querySelector('.btb-batch') ? tr.querySelector('.btb-batch').value.trim().slice(0, 40) : '',
+      perluLuput: !!tr.querySelector('.btb-luput')
     };
   });
+  const noExpiry = lines.find(l => l.perluLuput && l.diterima > 0 && !/^\d{4}-\d{2}-\d{2}$/.test(l.luput));
+  if (noExpiry) { showToast(`Sila isi Tarikh Luput bagi ${noExpiry.sku} (item bertarikh luput).`, 'error'); return; }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tarikhTerima)) { showToast('Sila isi Tarikh Terima.', 'error'); return; }
   if (!penerimaNama) { showToast('Sila isi nama Pegawai Penerima.', 'error'); return; }
@@ -5398,11 +5460,19 @@ async function confirmBtbReceipt() {
       const freshLpo = lpoSnap.data();
       if (freshLpo.status === 'Selesai') throw new Error('Stok bagi LPO ini telah diterima.');
 
-      // Harga direkod pada tarikh terima (untuk rekod KEW.PS-1)
-      const btbItems = lines.map(l => {
+      // Harga direkod pada tarikh terima (untuk rekod KEW.PS-1): harga PO jika ada, jika tidak harga Stok Induk
+      const btbItems = lines.map(({ hargaPO, perluLuput, ...l }) => {
         const inv = fresh.items.find(it => String(it.id) === String(l.itemId) || it.sku === l.sku);
-        const harga = inv ? (parseFloat(inv.harga) || 0) : 0;
-        if (inv) inv.baki = (parseInt(inv.baki) || 0) + l.diterima;
+        const harga = hargaPO !== null ? hargaPO : (inv ? (parseFloat(inv.harga) || 0) : 0);
+        if (inv) {
+          inv.baki = (parseInt(inv.baki) || 0) + l.diterima;
+          // Item bertarikh luput: rekod batch baharu
+          if (l.luput && l.diterima > 0) {
+            addToBatch(inv, { luput: l.luput, noBatch: l.noBatch, qty: l.diterima, date: tarikhTerima, ref: btbNo });
+            pruneBatches(inv);
+          }
+        }
+        if (!l.luput) { delete l.luput; delete l.noBatch; }
         return { ...l, unit: l.unit || (inv && inv.unit) || '', harga, jumlah: Math.round(harga * l.diterima * 100) / 100 };
       });
 
@@ -5465,7 +5535,7 @@ function previewKewPs1(lpoId) {
       <td class="${cell} text-center font-bold">${toInt(i.diterima)}</td>
       <td class="${cell} text-right">${formatRM(i.harga)}</td>
       <td class="${cell} text-right font-bold">${formatRM(i.jumlah)}</td>
-      <td class="${cell}">${escapeHtml(i.catatan || '')}</td>
+      <td class="${cell}">${[i.luput ? `Luput: ${formatDate(i.luput)}${i.noBatch ? ` (Batch ${i.noBatch})` : ''}` : '', i.catatan || ''].filter(Boolean).map(escapeHtml).join('<br>')}</td>
     </tr>`).join('');
   const total = (b.items || []).reduce((s, i) => s + (Number(i.jumlah) || 0), 0);
 
@@ -6042,8 +6112,13 @@ function sanitizeKlinik(d) {
     const u = klinikUnitOf(id, it.sku);
     const oldF = Math.max(1, toInt(it.faktor) || 1);
     let baki = toInt(it.baki);
-    if (u.inv && oldF !== u.faktor) baki = Math.round(baki * u.faktor / oldF);
-    out[id] = { ...it, baki, faktor: u.inv ? u.faktor : oldF, unitBungkus: u.inv ? u.unit : (it.unitBungkus || '') };
+    const rescale = u.inv && oldF !== u.faktor;
+    if (rescale) baki = Math.round(baki * u.faktor / oldF);
+    const conv = (n) => Math.round(toInt(n) * u.faktor / oldF);
+    const batch = Array.isArray(it.batch)
+      ? it.batch.map(b => rescale ? { ...b, baki: conv(b.baki), qtyTerima: conv(b.qtyTerima), riwayat: (b.riwayat || []).map(r => ({ ...r, b: conv(r.b) })) } : b)
+      : undefined;
+    out[id] = { ...it, baki, faktor: u.inv ? u.faktor : oldF, unitBungkus: u.inv ? u.unit : (it.unitBungkus || ''), ...(batch ? { batch } : {}) };
   });
   return { ...d, unit: String(d.unit || ''), items: out };
 }
@@ -6086,6 +6161,7 @@ function renderKlinikAll() {
   renderKlinikView();
   renderAdminKlinik();
   renderDaftarPanels();
+  renderExpiryWarnings();
   // Baki & penggunaan klinik dipaparkan dalam borang permohonan
   renderReqItemPreview();
   renderDraftTable();
@@ -6264,7 +6340,16 @@ function saveKlinikBakiAwal() {
       await db.runTransaction(async (tx) => {
         const ref = klinikRef(unit);
         const snap = await tx.get(ref);
-        if (snap.exists && snap.data().bakiAwalDikunci) throw new Error('Baki awal telah dikunci. Hubungi SuperAdmin untuk membukanya semula.');
+        if (snap.exists && snap.data().bakiAwalDikunci) throw new Error('Baki awal telah dikunci. Hubungi Pegawai Pelulus atau SuperAdmin untuk membukanya semula.');
+        // Pembetulan baki awal: kekalkan batch (tarikh luput) sedia ada, diselaraskan dengan baki baharu
+        const oldItems = snap.exists ? sanitizeKlinik(snap.data()).items : {};
+        Object.entries(itemsMap).forEach(([id, it]) => {
+          const old = oldItems[id];
+          if (old && batchesOf(old).length) {
+            it.batch = batchesOf(old).map(b => ({ ...b }));
+            trimBatchesToBaki(it);
+          }
+        });
         tx.set(ref, { unit, items: itemsMap, bakiAwalDikunci: true, bakiAwalPada: now, bakiAwalOleh: currentUserEmail, dikemaskiniPada: now });
         tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('baki_awal', unit, logItems));
       });
@@ -6365,8 +6450,13 @@ function confirmKlinikReceipt(reqId) {
           const cur = changes[id] || kItems[id] || {
             sku: i.sku || '', nama: i.nama || (u.inv && u.inv.nama) || '', unitBungkus: u.unit, faktor: u.faktor, kategori: i.kategori || (u.inv && u.inv.kategori) || '', baki: 0
           };
-          changes[id] = { ...cur, baki: toInt(cur.baki) + qtyKlinik };
-          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty: qtyKlinik, bakiSelepas: changes[id].baki });
+          const next = { ...cur };
+          // Batch daripada stor daerah (MDKD), diskala ke kuantiti diterima & unit klinik
+          const recvBatches = scaleAllocations(i.batchKeluar, qtyKlinik, u.faktor);
+          recvBatches.forEach(a => addToBatch(next, { luput: a.luput, noBatch: a.noBatch, qty: a.qty, ref: req.id }));
+          next.baki = toInt(cur.baki) + qtyKlinik;
+          changes[id] = next;
+          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty: qtyKlinik, bakiSelepas: next.baki, ...(recvBatches.length ? { batch: recvBatches } : {}) });
           return qty;
         });
 
@@ -6404,8 +6494,11 @@ function applyKlinikReversal(tx, klinikSnap, r) {
     if (qty <= 0) return;
     const cur = changes[id] || kItems[id];
     if (!cur) return;
+    const next = { ...cur };
+    if (batchesOf(next).length) deductFefo(next, Math.min(qty, toInt(cur.baki)));
     const baki = Math.max(0, toInt(cur.baki) - qty);
-    changes[id] = { ...cur, baki };
+    next.baki = baki;
+    changes[id] = next;
     logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: baki });
   });
   if (logItems.length === 0) return;
@@ -6448,6 +6541,7 @@ function renderKlinikStockList() {
           <p class="text-sm font-extrabold ${habis ? 'text-slate-400' : 'text-slate-900'} leading-snug">${escapeHtml(it.nama)}</p>
           <p class="text-[11px] text-slate-400">${escapeHtml(it.sku)}</p>
           <p class="text-xs font-extrabold mt-1 ${habis ? 'text-rose-600' : 'text-emerald-700'}">Baki: ${escapeHtml(formatKlinikQty(it.baki, it.id, it.sku))}</p>
+          ${earliestExpiryText(it) ? `<p class="text-[10px] font-bold text-rose-700"><i class="fa-solid fa-hourglass-half mr-0.5"></i>${escapeHtml(earliestExpiryText(it))}</p>` : ''}
         </div>
         ${habis ? '<span class="shrink-0 text-xs font-black text-rose-600 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">Habis</span>' : `
         <div class="shrink-0 flex flex-col items-stretch gap-2 w-[8.5rem]">
@@ -6510,9 +6604,12 @@ async function recordKlinikUsage(itemId) {
       const month = currentMonthKey();
       const keluarBulan = { ...(cur.keluarBulan || {}) };
       keluarBulan[month] = toInt(keluarBulan[month]) + qty;
-      tx.set(ref, { items: { [itemId]: { ...cur, baki: bakiBaru, keluarBulan } }, dikemaskiniPada: new Date().toISOString() }, { merge: true });
+      const next = { ...cur, keluarBulan };
+      const alloc = batchesOf(next).length ? deductFefo(next, qty) : []; // MDKD: luput terawal dahulu
+      next.baki = bakiBaru;
+      tx.set(ref, { items: { [itemId]: next }, dikemaskiniPada: new Date().toISOString() }, { merge: true });
       tx.set(db.collection('kraipro_klinik_log').doc(), klinikLogEntry('keluar', unit, [
-        { itemId, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: bakiBaru }
+        { itemId, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty, bakiSelepas: bakiBaru, ...(alloc.length ? { batch: alloc } : {}) }
       ]));
     });
     delete klinikDraftQty[itemId];
@@ -6694,7 +6791,7 @@ function renderAdminKlinikDetail(month) {
     ok: '<span class="bg-emerald-100 text-emerald-700 font-black px-2 py-0.5 rounded-full text-[10px]">Mencukupi</span>'
   };
   const logs = klinikLogs.filter(l => l.unit === unit && l.bulan === month);
-  const canUnlock = currentUserRole === 'superadmin' && doc && doc.bakiAwalDikunci;
+  const canUnlock = canApproveRequests() && doc && doc.bakiAwalDikunci; // SuperAdmin & Pegawai Pelulus
 
   box.classList.remove('hidden');
   box.innerHTML = `
@@ -6748,7 +6845,7 @@ function renderAdminKlinikDetail(month) {
 }
 
 function unlockKlinikBakiAwal(unit) {
-  if (currentUserRole !== 'superadmin') return;
+  if (!canApproveRequests()) return;
   showConfirmModal('Buka Kunci Baki Awal', `Buka semula baki awal ${unit}? Penjaga stor klinik boleh membetulkan baki semua item, kemudian menguncinya semula.`, async () => {
     const token = showLoadingOverlay('Membuka kunci baki awal...');
     try {
@@ -6761,6 +6858,155 @@ function unlockKlinikBakiAwal(unit) {
       hideLoadingOverlay(token);
     }
   });
+}
+
+
+// ------------------------------------------
+// 16c. BATCH & TARIKH LUPUT (Tatacara 13: Stok Bertarikh Luput)
+//   Item bertarikh luput (item.bertarikhLuput) menyimpan batch: [{ id, luput, noBatch, qtyTerima, baki, tarikhTerima, ref, riwayat }]
+//   - riwayat: [{ t: 'YYYY-MM-DD', b: baki }] untuk KEW.PS-6 (baki pada minggu pertama setiap bulan)
+//   - Stok lama tanpa rekod luput = baki item − jumlah baki batch; dikeluarkan dahulu (MDKD)
+//   - Pengeluaran: batch luput terawal dahulu (MDKD, termasuk pengecualian 13.4)
+//   Fungsi yang sama digunakan untuk item stor daerah (unit stor) dan item stor klinik (unit klinik).
+// ------------------------------------------
+const EXPIRY_WARN_MONTHS = 6;
+
+function batchesOf(it) {
+  return it && Array.isArray(it.batch) ? it.batch : [];
+}
+
+function batchTotal(it) {
+  return batchesOf(it).reduce((s, b) => s + toInt(b.baki), 0);
+}
+
+function fefoSorted(list) {
+  return [...list].sort((a, b) => String(a.luput || '9999').localeCompare(String(b.luput || '9999')) || String(a.tarikhTerima || '').localeCompare(String(b.tarikhTerima || '')));
+}
+
+function newBatchId() {
+  return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function setBatchBaki(b, baki, date) {
+  b.baki = Math.max(0, toInt(baki));
+  const t = date || todayISODate();
+  const r = Array.isArray(b.riwayat) ? b.riwayat : [];
+  if (r.length && r[r.length - 1].t === t) r[r.length - 1].b = b.baki;
+  else r.push({ t, b: b.baki });
+  b.riwayat = r.slice(-40);
+}
+
+// Tambah stok ke batch (gabung dengan batch yang sama tarikh luput & no. batch)
+function addToBatch(it, { luput, noBatch = '', qty, date, ref = '' }) {
+  qty = toInt(qty);
+  if (!luput || qty <= 0) return null;
+  const list = batchesOf(it).slice();
+  let b = list.find(x => x.luput === luput && String(x.noBatch || '') === String(noBatch || ''));
+  if (!b) {
+    b = { id: newBatchId(), luput, noBatch: String(noBatch || ''), qtyTerima: 0, baki: 0, tarikhTerima: date || todayISODate(), ref, riwayat: [] };
+    list.push(b);
+  }
+  b.qtyTerima = toInt(b.qtyTerima) + qty;
+  setBatchBaki(b, toInt(b.baki) + qty, date);
+  it.batch = list;
+  return { id: b.id, luput: b.luput, noBatch: b.noBatch, qty };
+}
+
+// Tolak qty ikut MDKD. Dipanggil SEBELUM it.baki dikurangkan (baki lama diperlukan untuk kira stok tanpa rekod luput).
+// Pulangkan peruntukan batch: [{ id, luput, noBatch, qty }]
+function deductFefo(it, qty, date) {
+  let remain = toInt(qty);
+  const alloc = [];
+  const list = batchesOf(it).map(b => ({ ...b }));
+  const legacy = Math.max(0, toInt(it.baki) - list.reduce((s, b) => s + toInt(b.baki), 0));
+  remain -= Math.min(legacy, remain); // stok lama dahulu
+  fefoSorted(list.filter(b => toInt(b.baki) > 0)).forEach(b => {
+    if (remain <= 0) return;
+    const take = Math.min(toInt(b.baki), remain);
+    setBatchBaki(b, toInt(b.baki) - take, date);
+    alloc.push({ id: b.id, luput: b.luput, noBatch: b.noBatch || '', qty: take });
+    remain -= take;
+  });
+  if (list.length) it.batch = list;
+  return alloc;
+}
+
+// Pulangkan peruntukan ke batch asal (pembatalan / pindahan dibatalkan)
+function restoreAllocations(it, alloc, date) {
+  (alloc || []).forEach(a => {
+    const list = batchesOf(it).map(b => ({ ...b }));
+    const b = list.find(x => x.id === a.id) || list.find(x => x.luput === a.luput && String(x.noBatch || '') === String(a.noBatch || ''));
+    if (b) {
+      setBatchBaki(b, toInt(b.baki) + toInt(a.qty), date);
+      it.batch = list;
+    } else {
+      addToBatch(it, { luput: a.luput, noBatch: a.noBatch, qty: a.qty, date });
+    }
+  });
+}
+
+// Skala peruntukan ke kuantiti lain (cth: diterima kurang, atau tukar unit stor -> unit klinik), ikut MDKD
+function scaleAllocations(alloc, totalQty, factor = 1) {
+  let remain = toInt(totalQty);
+  return fefoSorted(alloc || []).map(a => {
+    const q = Math.min(remain, toInt(a.qty) * factor);
+    remain -= q;
+    return { ...a, qty: q };
+  }).filter(a => a.qty > 0);
+}
+
+// Selepas baki item diubah secara manual: pastikan jumlah batch tidak melebihi baki (kurangkan batch luput terawal)
+function trimBatchesToBaki(it, date) {
+  const excess = batchTotal(it) - toInt(it.baki);
+  if (excess <= 0) return;
+  const tmp = { ...it, baki: batchTotal(it) }; // tiada stok lama dalam pengiraan ini
+  deductFefo(tmp, excess, date);
+  it.batch = tmp.batch;
+}
+
+// Buang batch kosong yang telah luput lebih 8 bulan (kekalkan cukup lama untuk KEW.PS-6)
+function pruneBatches(it) {
+  if (!Array.isArray(it.batch)) return;
+  const cutoff = shiftMonthKey(todayISODate().slice(0, 7), -8);
+  it.batch = it.batch.filter(b => toInt(b.baki) > 0 || String(b.luput || '').slice(0, 7) >= cutoff);
+}
+
+// Baki batch pada tarikh tertentu (daripada riwayat); null jika belum diterima
+function batchBakiAt(b, date) {
+  if (String(b.tarikhTerima || '') > date) return null;
+  const r = (b.riwayat || []).filter(x => x.t <= date);
+  return r.length ? toInt(r[r.length - 1].b) : toInt(b.qtyTerima);
+}
+
+function daysUntil(iso) {
+  return Math.floor((Date.parse(iso + 'T00:00:00Z') - Date.parse(todayISODate() + 'T00:00:00Z')) / 86400000);
+}
+
+// Batch hampir luput / telah luput (baki > 0) bagi senarai item: [{ item, batch, hari }]
+function expiringBatches(itemList, months = EXPIRY_WARN_MONTHS) {
+  const limit = `${shiftMonthKey(todayISODate().slice(0, 7), months)}-31`;
+  const out = [];
+  itemList.forEach(it => batchesOf(it).forEach(b => {
+    if (toInt(b.baki) > 0 && b.luput && b.luput <= limit) out.push({ item: it, batch: b, hari: daysUntil(b.luput) });
+  }));
+  return out.sort((x, y) => x.batch.luput.localeCompare(y.batch.luput));
+}
+
+function expiryBadgeHtml(hari) {
+  if (hari < 0) return '<span class="px-1.5 py-0.5 rounded-md text-[10px] font-black bg-rose-700 text-white">Telah luput</span>';
+  if (hari <= 90) return `<span class="px-1.5 py-0.5 rounded-md text-[10px] font-black bg-rose-100 text-rose-800">${hari} hari lagi</span>`;
+  return `<span class="px-1.5 py-0.5 rounded-md text-[10px] font-black bg-amber-100 text-amber-800">${Math.round(hari / 30)} bulan lagi</span>`;
+}
+
+// Teks ringkas tarikh luput terawal bagi item (untuk senarai)
+function earliestExpiryText(it) {
+  const b = fefoSorted(batchesOf(it).filter(x => toInt(x.baki) > 0))[0];
+  return b ? `Luput terawal: ${formatDate(b.luput)} (${toInt(b.baki)})` : '';
+}
+
+function isExpiryItem(itemId, sku) {
+  const inv = items.find(i => String(i.id) === String(itemId)) || (sku ? items.find(i => i.sku === sku) : null);
+  return !!(inv && inv.bertarikhLuput);
 }
 
 
@@ -7520,9 +7766,12 @@ function submitKlinikPindahan() {
           const pinItems = lines.map(l => {
             const cur = kItems[l.id];
             if (!cur || cur.baki < l.qty) throw new Error(`Baki ${l.it.nama} tidak mencukupi (baki ${cur ? cur.baki : 0}).`);
-            changes[l.id] = { ...cur, baki: cur.baki - l.qty };
-            logItems.push({ itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty: l.qty, bakiSelepas: cur.baki - l.qty });
-            return { itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', faktor: cur.faktor || 1, kategori: cur.kategori || '', qty: l.qty };
+            const next = { ...cur };
+            const alloc = batchesOf(next).length ? deductFefo(next, l.qty) : []; // MDKD
+            next.baki = cur.baki - l.qty;
+            changes[l.id] = next;
+            logItems.push({ itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', qty: l.qty, bakiSelepas: next.baki, ...(alloc.length ? { batch: alloc } : {}) });
+            return { itemId: l.id, sku: cur.sku || '', nama: cur.nama || '', unit: cur.unitBungkus || '', faktor: cur.faktor || 1, kategori: cur.kategori || '', qty: l.qty, ...(alloc.length ? { batch: alloc } : {}) };
           });
 
           const now = new Date().toISOString();
@@ -7618,8 +7867,12 @@ function confirmKlinikPindahan(pinId) {
             if (qty <= 0) return;
             const id = String(i.itemId || i.sku);
             const base = changes[id] || kItems[id] || { sku: i.sku || '', nama: i.nama || '', unitBungkus: klinikUnitOf(id, i.sku).unit || i.unit || '', faktor: klinikUnitOf(id, i.sku).faktor, kategori: i.kategori || '', baki: 0 };
-            changes[id] = { ...base, baki: toInt(base.baki) + qty };
-            logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty, bakiSelepas: changes[id].baki });
+            const next = { ...base };
+            const recv = scaleAllocations(i.batch, qty); // batch ikut kuantiti diterima (MDKD)
+            recv.forEach(a => addToBatch(next, { luput: a.luput, noBatch: a.noBatch, qty: a.qty, ref: p.id }));
+            next.baki = toInt(base.baki) + qty;
+            changes[id] = next;
+            logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty, bakiSelepas: next.baki, ...(recv.length ? { batch: recv } : {}) });
           });
           const now = new Date().toISOString();
           tx.set(kRef, { items: changes, dikemaskiniPada: now }, { merge: true });
@@ -7662,8 +7915,11 @@ function cancelPindahan(pinId) {
         cur.items.forEach(i => {
           const id = String(i.itemId || i.sku);
           const base = changes[id] || kItems[id] || { sku: i.sku || '', nama: i.nama || '', unitBungkus: klinikUnitOf(id, i.sku).unit || i.unit || '', faktor: klinikUnitOf(id, i.sku).faktor, kategori: i.kategori || '', baki: 0 };
-          changes[id] = { ...base, baki: toInt(base.baki) + toInt(i.qty) };
-          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty: toInt(i.qty), bakiSelepas: changes[id].baki });
+          const next = { ...base };
+          if (Array.isArray(i.batch)) restoreAllocations(next, i.batch); // kembali ke batch asal penghantar
+          next.baki = toInt(base.baki) + toInt(i.qty);
+          changes[id] = next;
+          logItems.push({ itemId: id, sku: i.sku || '', nama: i.nama || '', unit: i.unit || '', qty: toInt(i.qty), bakiSelepas: next.baki });
         });
         const now = new Date().toISOString();
         tx.set(kRef, { unit: cur.dariUnit, items: changes, dikemaskiniPada: now }, { merge: true });
@@ -7762,7 +8018,19 @@ function confirmPulanganDaerah(pinId) {
           cur.items.forEach(i => {
             const inv = fresh.items.find(it => String(it.id) === String(i.itemId) || it.sku === i.sku);
             // Pulangan direkod dalam unit klinik; stok induk dalam unit stor (qty ÷ faktor)
-            if (inv) inv.baki = toInt(inv.baki) + Math.floor(toInt(i.qty) / Math.max(1, toInt(i.faktor) || 1));
+            if (inv) {
+              const f = Math.max(1, toInt(i.faktor) || 1);
+              const boxes = Math.floor(toInt(i.qty) / f);
+              // Batch dipulangkan ke stor daerah dalam unit stor (baki pecahan diletakkan pada batch luput terawal)
+              if (Array.isArray(i.batch) && i.batch.length && boxes > 0) {
+                const sorted = fefoSorted(i.batch);
+                const per = sorted.map(a => Math.floor(toInt(a.qty) / f));
+                const batchBoxes = Math.min(boxes, Math.floor(sorted.reduce((s, a) => s + toInt(a.qty), 0) / f));
+                per[0] += batchBoxes - per.reduce((s, n) => s + n, 0);
+                sorted.forEach((a, k) => { if (per[k] > 0) addToBatch(inv, { luput: a.luput, noBatch: a.noBatch, qty: per[k], ref: p.id }); });
+              }
+              inv.baki = toInt(inv.baki) + boxes;
+            }
           });
           tx.update(pindahanRef(p.id), {
             status: 'Diterima', penerimaEmail: currentUserEmail,
@@ -7875,7 +8143,7 @@ function dsPriceOf(id, sku) {
 function dsItemList(prefix) {
   let list;
   if (prefix === 'ds-daerah') {
-    list = items.map(i => ({ id: String(i.id), sku: i.sku, nama: i.nama, unit: i.unit || '', kategori: i.kategori, subkategori: i.subkategori, baki: toInt(i.baki), harga: parseFloat(i.harga) || 0, reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks) }));
+    list = items.map(i => ({ id: String(i.id), sku: i.sku, nama: i.nama, unit: i.unit || '', kategori: i.kategori, subkategori: i.subkategori, baki: toInt(i.baki), harga: parseFloat(i.harga) || 0, reorder: toInt(i.reorder), paraMin: toInt(i.paraMin), paraMaks: toInt(i.paraMaks), lokasi: i.lokasi || '', bertarikhLuput: !!i.bertarikhLuput, batch: batchesOf(i) }));
   } else {
     const doc = klinikDocFor(dsUnit(prefix));
     list = klinikItemList(doc).map(it => {
@@ -7884,7 +8152,8 @@ function dsItemList(prefix) {
         id: String(it.id), sku: it.sku || (inv && inv.sku) || '', nama: it.nama || (inv && inv.nama) || '', unit: it.unitBungkus || (inv && inv.unit) || '',
         // Harga seunit klinik = harga unit stor ÷ bilangan unit klinik (cth: RM 25/Box ÷ 5 = RM 5/Paket)
         kategori: it.kategori || (inv && inv.kategori) || '', subkategori: inv ? inv.subkategori : '', baki: toInt(it.baki),
-        harga: dsPriceOf(it.id, it.sku) / klinikUnitOf(it.id, it.sku).faktor, reorder: null, paraMin: null, paraMaks: null
+        harga: dsPriceOf(it.id, it.sku) / klinikUnitOf(it.id, it.sku).faktor, reorder: null, paraMin: null, paraMaks: null,
+        lokasi: '', bertarikhLuput: !!(inv && inv.bertarikhLuput), batch: batchesOf(it)
       };
     });
   }
@@ -7941,9 +8210,19 @@ function renderDaftarPanel(prefix) {
           <select onchange="setDaftarSelection('${prefix}', 'item', this.value)" class="${field} mt-0.5">${opt('', `Semua item dipilih (${catItems.length})`, sel.item)}${catItems.map(i => opt(i.id, `${i.noKad} · ${i.sku} · ${i.nama}`, sel.item)).join('')}</select>
         </label>
       </div>
+      <div class="flex flex-wrap items-end gap-3 bg-rose-50/60 border border-rose-200 rounded-xl p-2.5">
+        <label class="text-[11px] font-bold text-slate-600">Bulan luput (KEW.PS-6)
+          <input type="month" value="${escapeHtml(sel.bulanLuput || defaultExpiryMonth(list))}" onchange="setDaftarSelection('${prefix}', 'bulanLuput', this.value)" class="${field} mt-0.5">
+        </label>
+        <button type="button" onclick="generateKewPs6('${prefix}')" class="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow"><i class="fa-solid fa-hourglass-half mr-1"></i> Jana KEW.PS-6 (Stok Bertarikh Luput)</button>
+        <label class="flex items-center gap-1.5 text-[11px] font-bold text-slate-700 pb-2">
+          <input type="checkbox" ${sel.luputSahaja ? 'checked' : ''} onchange="setDaftarSelection('${prefix}', 'luputSahaja', this.checked)" class="w-4 h-4 rounded text-rose-600"> KEW.PS-4: stok bertarikh luput sahaja
+        </label>
+      </div>
       <div class="flex flex-wrap gap-2">
         <button type="button" onclick="generateKewPs3('${prefix}')" class="flex-1 sm:flex-initial bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow"><i class="fa-solid fa-file-lines mr-1"></i> Jana KEW.PS-3 (Daftar Stok)</button>
         <button type="button" onclick="generateKewPs4('${prefix}')" class="flex-1 sm:flex-initial bg-white border-2 border-purple-300 hover:bg-purple-50 text-purple-800 font-extrabold text-xs px-4 py-2 rounded-xl"><i class="fa-solid fa-list-ol mr-1"></i> Jana KEW.PS-4 (Senarai)</button>
+        ${prefix === 'ds-daerah' ? `<button type="button" onclick="generateKewPs5()" title="Kumpulan A/B ikut nilai pembelian 2 tahun sebelum tahun dipilih" class="flex-1 sm:flex-initial bg-white border-2 border-amber-300 hover:bg-amber-50 text-amber-800 font-extrabold text-xs px-4 py-2 rounded-xl"><i class="fa-solid fa-layer-group mr-1"></i> Jana KEW.PS-5 (Kumpulan Stok)</button>` : ''}
       </div>
     </div>`;
 }
@@ -8136,7 +8415,7 @@ function kewPs3FormHtml(item, ledger, year, storeName, isLast) {
         <tr><td class="${h} text-left">No. Kod</td><td colspan="4" class="${c} font-bold">${escapeHtml(item.sku)}</td><td class="${h} text-left">Kumpulan</td><td class="${c}">${escapeHtml(itemCategoryName(item))}</td></tr>
         <tr><td class="${h} text-left">Unit Pengukuran</td><td colspan="4" class="${c}">${escapeHtml(item.unit)}</td><td class="${h} text-left">Pergerakan</td><td class="${c}">&nbsp;</td></tr>
         <tr><td rowspan="2" class="${h} text-left">Lokasi Penyimpanan Stok</td><td class="${h}">Gudang/ Seksyen</td><td class="${h}">Baris</td><td class="${h}">Rak</td><td class="${h}">Tingkat</td><td class="${h}">Petak</td><td class="${h}">Kod Lokasi Penuh</td></tr>
-        <tr>${blank(6)}</tr>
+        <tr>${blank(5)}<td class="${c}">${escapeHtml(item.lokasi || '')}&nbsp;</td></tr>
       </table>
 
       <table class="w-full border-collapse">
@@ -8169,8 +8448,9 @@ function kewPs3FormHtml(item, ledger, year, storeName, isLast) {
     </div>`;
 
   const MIN_ROWS = 28;
+  // Tatacara 6.1: penerimaan direkod dengan dakwat merah, pengeluaran dengan hitam
   const txRows = ledger.rows.map(r => `
-    <tr>
+    <tr${r.masuk ? ' class="text-red-600" style="color:#dc2626"' : ''}>
       <td class="${c} text-center whitespace-nowrap">${escapeHtml(formatDate(r.tarikh))}</td>
       <td class="${c} text-center break-words">${escapeHtml(r.ref)}</td>
       <td class="${c} break-words">${escapeHtml(r.pihak)}</td>
@@ -8227,7 +8507,9 @@ async function generateKewPs4(prefix) {
     showToast('Gagal menyediakan Senarai Daftar Stok: ' + authErrorMessage(err), 'error');
     return;
   }
-  const { sel, year, list, ledgerOf } = data;
+  const { sel, year, ledgerOf } = data;
+  // Tatacara 6.4: KEW.PS-4 bagi stok bertarikh luput boleh diasingkan
+  const list = sel.luputSahaja ? data.list.filter(i => i.bertarikhLuput) : data.list;
   if (list.length === 0) {
     showToast('Tiada item untuk dijana.', 'error');
     return;
@@ -8248,7 +8530,7 @@ async function generateKewPs4(prefix) {
     <div class="print-portrait text-black font-sans text-[11px] space-y-3">
       <div class="flex justify-between text-[10px]"><span>Pekeliling Perbendaharaan Malaysia</span><span>AM 6.3 Lampiran B</span></div>
       <p class="text-right font-bold text-xs">KEW.PS-4</p>
-      <h2 class="text-center font-bold text-xs">SENARAI DAFTAR STOK</h2>
+      <h2 class="text-center font-bold text-xs">SENARAI DAFTAR STOK${sel.luputSahaja ? ' (STOK BERTARIKH LUPUT)' : ''}</h2>
       <p class="text-center">${escapeHtml(dsStoreName(prefix))}${sel.cat ? ` · ${escapeHtml(sel.cat)}` : ''} · Tahun ${escapeHtml(year)} · Setakat ${escapeHtml(formatDate(todayISODate()))}</p>
       <table class="w-full border-collapse table-fixed">
         <colgroup><col style="width:7%"><col style="width:10%"><col style="width:16%"><col style="width:39%"><col style="width:13%"><col style="width:15%"></colgroup>
@@ -8272,6 +8554,283 @@ async function generateKewPs4(prefix) {
         </tfoot>
       </table>
     </div>`);
+}
+
+
+// ---- KEW.PS-5: Penentuan Kumpulan Stok ----
+//   (a), (b) = nilai pembelian 2 tahun sebelum tahun dipilih (LPO yang disahkan terima / BTB)
+//   (c) = (a + b) ÷ 2;  (d) = c ÷ Σc × 100
+//   Disusun ikut nilai tertinggi: 30% item teratas = Kumpulan A, selebihnya Kumpulan B
+const KEWPS5_GROUP_A_SHARE = 0.3;
+
+// Nilai pembelian (RM) setiap item mengikut tahun & bulan penerimaan:
+//   { itemId: { 'YYYY': nilai, 'YYYY-MM': nilai } }, serta out._first = tarikh terima terawal ('YYYY-MM-DD')
+function purchaseValuesByYear() {
+  const out = {};
+  let first = '';
+  lpoList.forEach(lpo => {
+    const year = String(lpo.tarikhTerima || '').slice(0, 4);
+    if (lpo.status !== 'Selesai' || !/^\d{4}$/.test(year)) return;
+    const lines = lpo.btb && Array.isArray(lpo.btb.items)
+      ? lpo.btb.items.map(b => ({ ...b, nilai: b.jumlah !== undefined ? parseFloat(b.jumlah) || 0 : toInt(b.diterima) * (parseFloat(b.harga) || 0) }))
+      : (lpo.items || []).map(i => {
+          const inv = findInventoryItem(i);
+          const harga = i.harga !== undefined ? parseFloat(i.harga) || 0 : (inv ? parseFloat(inv.harga) || 0 : 0);
+          return { ...i, nilai: toInt(i.qty) * harga };
+        });
+    const month = String(lpo.tarikhTerima).slice(0, 7);
+    lines.forEach(l => {
+      const inv = findInventoryItem(l);
+      if (!inv || !(l.nilai > 0)) return;
+      const m = out[String(inv.id)] || (out[String(inv.id)] = {});
+      m[year] = (m[year] || 0) + l.nilai;
+      m[month] = (m[month] || 0) + l.nilai;
+      if (!first || lpo.tarikhTerima < first) first = String(lpo.tarikhTerima).slice(0, 10);
+    });
+  });
+  Object.defineProperty(out, '_first', { value: first, enumerable: false });
+  return out;
+}
+
+// Bilangan bulan (termasuk bulan semasa) dari tarikh mula hingga hari ini
+function monthsSince(isoDate) {
+  const [y1, m1] = isoDate.slice(0, 7).split('-').map(Number);
+  const [y2, m2] = todayISODate().slice(0, 7).split('-').map(Number);
+  return Math.max(1, (y2 - y1) * 12 + (m2 - m1) + 1);
+}
+
+function generateKewPs5() {
+  const sel = dsSelection['ds-daerah'] || { year: todayISODate().slice(0, 4), cat: '' };
+  const year = parseInt(sel.year);
+  const ya = String(year - 2), yb = String(year - 1);
+  const pv = purchaseValuesByYear();
+  const list = dsItemList('ds-daerah').filter(i => !sel.cat || itemCategoryName(i) === sel.cat);
+  if (list.length === 0) {
+    showToast('Tiada item untuk dijana.', 'error');
+    return;
+  }
+
+  // Asas pengiraan (automatik, ikut data yang ada dalam sistem):
+  //   'rasmi' : rekod pembelian meliputi 2 tahun penuh sebelum tahun dipilih -> (a) & (b) ikut tahun
+  //   'terkini': ada rekod pembelian tetapi kurang 2 tahun -> jumlah sejak rekod pertama, dianggar setahun
+  //   'stok'  : tiada rekod pembelian -> nilai stok semasa (baki × harga seunit)
+  const today = todayISODate();
+  const mode = !pv._first ? 'stok' : pv._first <= `${ya}-01-31` ? 'rasmi' : 'terkini';
+  // Tempoh terkini: sejak rekod pertama, maksimum 24 bulan terakhir
+  const windowStart = `${shiftMonthKey(today.slice(0, 7), -23)}-01`;
+  const first = pv._first && pv._first < windowStart ? windowStart : pv._first;
+  const months = first ? monthsSince(first) : 0;
+  const rows = list.map(i => {
+    const p = pv[i.id] || {};
+    if (mode === 'rasmi') {
+      const a = p[ya] || 0, b = p[yb] || 0;
+      return { ...i, a, b, c: (a + b) / 2 };
+    }
+    if (mode === 'terkini') {
+      const a = Object.keys(p).filter(k => /^\d{4}-\d{2}$/.test(k) && k >= first.slice(0, 7)).reduce((s, k) => s + p[k], 0);
+      const b = a * 12 / months;
+      return { ...i, a, b, c: b };
+    }
+    const a = toInt(i.baki), b = parseFloat(i.harga) || 0;
+    return { ...i, a, b, c: a * b };
+  }).sort((x, y) => y.c - x.c || String(x.nama).localeCompare(String(y.nama)));
+
+  const H = {
+    rasmi: {
+      group: 'Jumlah Nilai Pembelian Bagi 2 Tahun Lepas',
+      a: `${ya}<br>(RM)<br>(a)`, b: `${yb}<br>(RM)<br>(b)`, c: 'Purata Nilai Pembelian<br>[ a+b ] ÷ 2<br><br>(c)',
+      fa: v => formatRM(v), fb: v => formatRM(v),
+      note: `Nilai pembelian diambil daripada LPO yang disahkan terima (BTB) pada tahun ${ya} dan ${yb}.`
+    },
+    terkini: {
+      group: `Nilai Pembelian Terkini (${months} bulan)`,
+      a: `Jumlah<br>${escapeHtml(formatDate(first))} –<br>${escapeHtml(formatDate(today))}<br>(RM) (a)`,
+      b: `Anggaran<br>setahun<br>[ a × 12 ÷ ${months} ]<br>(RM) (b)`, c: 'Anggaran Nilai Pembelian Setahun<br><br>(c) = (b)',
+      fa: v => formatRM(v), fb: v => formatRM(v),
+      note: first !== pv._first
+        ? `Rekod pembelian belum meliputi tahun penuh ${ya} dan ${yb}. Kumpulan ditentukan berdasarkan pembelian ${months} bulan terakhir (${formatDate(first)} hingga ${formatDate(today)}) yang dianggarkan bagi setahun.`
+        : `Rekod pembelian dalam sistem belum mencukupi 2 tahun (bermula ${formatDate(first)}). Kumpulan ditentukan berdasarkan pembelian terkini (${months} bulan) yang dianggarkan bagi setahun. Jana semula apabila rekod 2 tahun penuh tersedia.`
+    },
+    stok: {
+      group: `Nilai Stok Semasa (${formatDate(today)})`,
+      a: 'Baki<br>Semasa<br>(unit)<br>(a)', b: 'Harga<br>Seunit<br>(RM)<br>(b)', c: 'Nilai Stok Semasa<br>[ a × b ]<br><br>(c)',
+      fa: v => String(v), fb: v => formatRM(v),
+      note: 'Tiada rekod pembelian (LPO disahkan terima) dalam sistem lagi. Kumpulan ditentukan berdasarkan nilai stok semasa (baki × harga seunit). Jana semula selepas ada rekod pembelian.'
+    }
+  }[mode];
+  const total = rows.reduce((s, r) => s + r.c, 0);
+  const nA = Math.round(rows.length * KEWPS5_GROUP_A_SHARE);
+  rows.forEach((r, idx) => {
+    r.d = total > 0 ? (r.c / total) * 100 : 0;
+    r.kumpulan = idx < nA && r.c > 0 ? 'A' : 'B'; // item tanpa pembelian tidak dimasukkan ke Kumpulan A
+  });
+  const countA = rows.filter(r => r.kumpulan === 'A').length;
+  const shareA = rows.filter(r => r.kumpulan === 'A').reduce((s, r) => s + r.d, 0);
+
+  const c = 'border border-black px-1.5 py-1';
+  const h = `${c} bg-slate-200 font-bold text-center`;
+  const MIN_ROWS = 20;
+  const pad = Array.from({ length: Math.max(0, MIN_ROWS - rows.length) }, () => `<tr>${`<td class="${c}">&nbsp;</td>`.repeat(8)}</tr>`).join('');
+
+  dsOpenPreview(`
+    <div class="print-portrait text-black font-sans text-[10.5px] space-y-3">
+      <p class="text-right font-bold text-xs">KEW.PS-5</p>
+      <h2 class="text-center font-bold text-xs">PENENTUAN KUMPULAN STOK</h2>
+      <p class="font-bold">Nama Stor: <span class="font-semibold">${escapeHtml(DS_DISTRICT_STORE)}</span>${sel.cat ? ` <span class="font-normal">· ${escapeHtml(sel.cat)}</span>` : ''}</p>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:5%"><col style="width:11%"><col style="width:28%"><col style="width:11%"><col style="width:11%"><col style="width:12%"><col style="width:11%"><col style="width:11%"></colgroup>
+        <thead>
+          <tr>
+            <th rowspan="2" class="${h}">Bil.</th><th rowspan="2" class="${h}">No. Kod</th><th rowspan="2" class="${h}">Perihal Stok</th>
+            <th colspan="2" class="${h}">${H.group}</th>
+            <th rowspan="2" class="${h}">${H.c}</th>
+            <th rowspan="2" class="${h}">Peratusan<br>[ c÷∑ ] x 100<br>(%)<br>(d)</th>
+            <th rowspan="2" class="${h}">Kumpulan Barang<br>A atau B</th>
+          </tr>
+          <tr><th class="${h}">${H.a}</th><th class="${h}">${H.b}</th></tr>
+        </thead>
+        <tbody>
+          ${rows.map((r, idx) => `
+            <tr>
+              <td class="${c} text-center">${idx + 1}</td>
+              <td class="${c} break-words">${escapeHtml(r.sku)}</td>
+              <td class="${c} break-words">${escapeHtml(r.nama)}</td>
+              <td class="${c} text-right">${r.a ? H.fa(r.a) : '-'}</td>
+              <td class="${c} text-right">${r.b ? H.fb(r.b) : '-'}</td>
+              <td class="${c} text-right">${r.c ? formatRM(r.c) : '-'}</td>
+              <td class="${c} text-right">${r.d ? r.d.toFixed(2) : '-'}</td>
+              <td class="${c} text-center font-bold">${r.kumpulan}</td>
+            </tr>`).join('')}
+          ${pad}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5" class="${c} bg-slate-200 text-right font-bold">∑ = JUMLAH KESELURUHAN</td>
+            <td class="${c} text-right font-bold">${formatRM(total)}</td>
+            <td colspan="2" class="${c} bg-slate-100 text-[10px] leading-snug">Catatan:<br>Kumpulan A = 30%<br>Kumpulan B = 70%</td>
+          </tr>
+        </tfoot>
+      </table>
+      <p class="text-[9.5px] text-slate-700 italic">Asas pengiraan: ${escapeHtml(H.note)}</p>
+      <p class="text-[10px] text-slate-600 no-print">Kumpulan A: ${countA} daripada ${rows.length} item (30% item dengan nilai tertinggi), meliputi ${shareA.toFixed(1)}% jumlah nilai. Item bernilai sifar diletakkan dalam Kumpulan B.</p>
+    </div>`);
+}
+
+
+// ---- KEW.PS-6: Senarai Stok Bertarikh Luput (Tatacara 13.5 & 13.6) ----
+//   Satu senarai bagi stok yang luput dalam bulan yang sama. Lajur "6 bulan … 1 bulan" = baki batch
+//   pada minggu pertama setiap bulan sebelum tamat tempoh luput (diambil daripada riwayat baki batch).
+const BULAN_MS = ['Januari', 'Februari', 'Mac', 'April', 'Mei', 'Jun', 'Julai', 'Ogos', 'September', 'Oktober', 'November', 'Disember'];
+
+function monthLabel(key) {
+  const [y, m] = String(key || '').split('-').map(Number);
+  return y && m ? `${BULAN_MS[m - 1]} ${y}` : '';
+}
+
+// Bulan luput terawal yang akan datang (atau bulan semasa) sebagai pilihan lalai
+function defaultExpiryMonth(list) {
+  const cur = todayISODate().slice(0, 7);
+  const months = (list || []).flatMap(i => batchesOf(i).map(b => String(b.luput || '').slice(0, 7))).filter(m => m && m >= cur).sort();
+  return months[0] || cur;
+}
+
+function generateKewPs6(prefix) {
+  const sel = dsSelection[prefix] || {};
+  const list = dsItemList(prefix).filter(i => !sel.cat || itemCategoryName(i) === sel.cat);
+  const month = sel.bulanLuput || defaultExpiryMonth(list);
+  const today = todayISODate();
+  const rows = [];
+  list.forEach(i => batchesOf(i).forEach(b => {
+    if (String(b.luput || '').slice(0, 7) === month) rows.push({ item: i, b });
+  }));
+  rows.sort((x, y) => String(x.item.nama).localeCompare(String(y.item.nama)) || x.b.luput.localeCompare(y.b.luput));
+  if (rows.length === 0) {
+    showToast(`Tiada stok bertarikh luput pada ${monthLabel(month)}.`, 'info');
+    return;
+  }
+  const c = 'border border-black px-1 py-1';
+  const h = `${c} bg-slate-200 font-bold text-center`;
+  // Tarikh semakan: minggu pertama (hari ke-7) setiap bulan, 6 hingga 1 bulan sebelum bulan luput
+  const checks = [6, 5, 4, 3, 2, 1].map(n => `${shiftMonthKey(month, -n)}-07`);
+  const snap = (b, d) => {
+    if (d > today) return '';
+    const v = batchBakiAt(b, d);
+    return v === null ? '-' : `<b>${v}</b><br><span class="text-[8.5px] text-slate-600">${escapeHtml(formatDate(d))}</span>`;
+  };
+  const MIN_ROWS = 10;
+  const pad = Array.from({ length: Math.max(0, MIN_ROWS - rows.length) }, () => `<tr>${`<td class="${c}">&nbsp;</td>`.repeat(13)}</tr>`).join('');
+  const kategori = [dsStoreName(prefix), sel.cat].filter(Boolean).join(' · ');
+
+  dsOpenPreview(`
+    <div class="text-black font-sans text-[10.5px] space-y-2">
+      <p class="text-right font-bold text-xs">KEW.PS-6</p>
+      <h2 class="text-center font-bold text-xs">SENARAI STOK BERTARIKH LUPUT</h2>
+      <table class="text-[11px] font-bold">
+        <tr><td class="pr-2 py-0.5">Kementerian/Jabatan:</td><td class="font-semibold">KEMENTERIAN KESIHATAN MALAYSIA / ${escapeHtml(DEFAULT_JABATAN)}</td></tr>
+        <tr><td class="pr-2 py-0.5">Kategori Stor:</td><td class="font-semibold">${escapeHtml(kategori)}</td></tr>
+        <tr><td class="pr-2 py-0.5">Bulan:</td><td class="font-semibold">${escapeHtml(monthLabel(month))}</td></tr>
+      </table>
+      <table class="w-full border-collapse table-fixed">
+        <colgroup><col style="width:4%"><col style="width:17%"><col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:8%">${'<col style="width:6.5%">'.repeat(6)}<col style="width:8%"></colgroup>
+        <thead>
+          <tr>
+            <th rowspan="2" class="${h}">Bil.</th><th rowspan="2" class="${h}">Perihal Stok</th><th rowspan="2" class="${h}">No. Kod</th>
+            <th rowspan="2" class="${h}">Lokasi Stok</th><th rowspan="2" class="${h}">Kuantiti Terimaan</th><th rowspan="2" class="${h}">Tarikh Luput</th>
+            <th colspan="6" class="${h}">Baki Stok Bagi 6 Bulan Sebelum Tamat Tempoh Luput<br><span class="font-normal">*(Kuantiti dan tarikh kemaskini)</span></th>
+            <th rowspan="2" class="${h}">Catatan</th>
+          </tr>
+          <tr>${[6, 5, 4, 3, 2, 1].map(n => `<th class="${h}">${n}<br>bulan</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${rows.map(({ item, b }, idx) => `
+            <tr>
+              <td class="${c} text-center">${idx + 1}</td>
+              <td class="${c} break-words">${escapeHtml(item.nama)}</td>
+              <td class="${c} break-words">${escapeHtml(item.sku)}</td>
+              <td class="${c} break-words">${escapeHtml(item.lokasi || '')}</td>
+              <td class="${c} text-center">${toInt(b.qtyTerima)} ${escapeHtml(item.unit || '')}</td>
+              <td class="${c} text-center whitespace-nowrap">${escapeHtml(formatDate(b.luput))}</td>
+              ${checks.map(d => `<td class="${c} text-center leading-tight">${snap(b, d)}</td>`).join('')}
+              <td class="${c} break-words text-[9.5px]">${[b.noBatch ? `Batch ${escapeHtml(b.noBatch)}` : '', b.ref ? escapeHtml(b.ref) : '', toInt(b.baki) > 0 ? `Baki kini: ${toInt(b.baki)}` : 'Habis'].filter(Boolean).join('<br>')}</td>
+            </tr>`).join('')}
+          ${pad}
+        </tbody>
+      </table>
+      <p class="text-[9.5px] italic">* Dikemaskini kuantiti dan tarikh oleh Pegawai Stor dalam bulan yang sama. Baki diambil daripada rekod sistem pada minggu pertama setiap bulan; lajur bulan yang belum tiba dibiarkan kosong.</p>
+    </div>`);
+}
+
+// ---- Amaran stok hampir luput (Dashboard & Stor Klinik) ----
+function expiryListHtml(entries, unitOf) {
+  return entries.slice(0, 50).map(({ item, batch, hari }) => `
+    <tr class="${hari < 0 ? 'bg-rose-50' : ''}">
+      <td class="p-2 font-bold text-slate-800">${escapeHtml(item.nama)}<span class="block text-[10px] text-slate-400">${escapeHtml(item.sku || '')}${batch.noBatch ? ` · Batch ${escapeHtml(batch.noBatch)}` : ''}</span></td>
+      <td class="p-2 text-center whitespace-nowrap font-bold">${escapeHtml(formatDate(batch.luput))}</td>
+      <td class="p-2 text-center">${expiryBadgeHtml(hari)}</td>
+      <td class="p-2 text-center font-black whitespace-nowrap">${toInt(batch.baki)} ${escapeHtml(unitOf(item))}</td>
+    </tr>`).join('');
+}
+
+function renderExpiryWarnings() {
+  // Stor daerah (pentadbir)
+  const card = document.getElementById('expiry-dashboard-card');
+  if (card) {
+    const entries = isAdminLoggedIn ? expiringBatches(items) : [];
+    card.classList.toggle('hidden', entries.length === 0);
+    const body = document.getElementById('expiry-dashboard-body');
+    if (body) body.innerHTML = expiryListHtml(entries, i => i.unit || '');
+    const cnt = document.getElementById('expiry-dashboard-count');
+    if (cnt) cnt.textContent = `${entries.length} batch`;
+  }
+  // Stor klinik (penjaga)
+  const kcard = document.getElementById('klinik-expiry-card');
+  if (kcard) {
+    const doc = isKlinikPenjaga() ? klinikDocFor(myKlinikUnit()) : null;
+    const entries = doc ? expiringBatches(klinikItemList(doc)) : [];
+    kcard.classList.toggle('hidden', entries.length === 0);
+    const kbody = document.getElementById('klinik-expiry-body');
+    if (kbody) kbody.innerHTML = expiryListHtml(entries, i => i.unitBungkus || '');
+  }
 }
 
 
@@ -8303,6 +8862,7 @@ function renderAll() {
   renderKlinikView();
   renderAdminKlinik();
   renderDaftarPanels();
+  renderExpiryWarnings();
   updateAdminTaskBadges();
 }
 

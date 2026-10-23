@@ -254,7 +254,7 @@
         <form id="access-request-form" class="space-y-2.5 text-left" onsubmit="event.preventDefault(); submitAccessRequest();">
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Nama Penuh <span class="text-rose-500">*</span></label>
-            <input type="text" id="access-nama" maxlength="120" required class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-semibold focus:ring-2 focus:ring-purple-500">
+            <input type="text" id="access-nama" maxlength="120" required class="uppercase w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-semibold focus:ring-2 focus:ring-purple-500">
           </div>
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Jawatan <span class="text-rose-500">*</span></label>
@@ -387,6 +387,23 @@
           </div>
           <h3 id="stat-total-value" class="mt-1 text-3xl font-extrabold text-slate-900">RM 0.00</h3>
           <p class="text-xs text-slate-500 mt-1">Jumlah nilai stok diluluskan</p>
+        </div>
+      </div>
+
+      <!-- STOK HAMPIR LUPUT (stor daerah; pentadbir) -->
+      <div id="expiry-dashboard-card" class="hidden bg-white p-5 rounded-3xl shadow-sm border-2 border-rose-200 space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-hourglass-half text-rose-600 mr-1"></i> Stok Hampir Luput (≤ 6 bulan)</h3>
+            <p class="text-xs text-slate-500">Tindakan (Tatacara 13.7): tawarkan kepada stor lain, keluarkan untuk latihan, pulangkan kepada pembekal, atau lupuskan.</p>
+          </div>
+          <span id="expiry-dashboard-count" class="shrink-0 bg-rose-100 text-rose-800 font-black text-xs px-2.5 py-1 rounded-full">0</span>
+        </div>
+        <div class="overflow-x-auto max-h-72 overflow-y-auto border border-slate-200 rounded-xl">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead><tr class="bg-rose-900 text-rose-100 font-bold uppercase text-[10px]"><th class="p-2">Item</th><th class="p-2 text-center">Tarikh Luput</th><th class="p-2 text-center">Tempoh</th><th class="p-2 text-center">Baki</th></tr></thead>
+            <tbody id="expiry-dashboard-body" class="divide-y divide-slate-100"></tbody>
+          </table>
         </div>
       </div>
 
@@ -582,7 +599,7 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Nama Pemohon <span class="text-rose-500">*</span></label>
-            <input type="text" id="req-nama" placeholder="Cth: Dr. Ahmad Hafiz" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+            <input type="text" id="req-nama" placeholder="Cth: DR. AHMAD HAFIZ" class="uppercase w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
           </div>
 
           <div>
@@ -825,7 +842,7 @@
       <div id="klinik-setup-card" class="hidden bg-white p-4 sm:p-5 rounded-3xl shadow-sm border-2 border-amber-300 space-y-3">
         <div>
           <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-clipboard-list text-amber-500 mr-1"></i> Isi Baki Awal Stor Klinik</h3>
-          <p class="text-xs text-slate-500 mt-1">Sekali sahaja: masukkan baki semasa bagi item yang ada di klinik anda (biarkan kosong jika tiada). Selepas disimpan, baki awal dikunci dan hanya SuperAdmin boleh membukanya semula.</p>
+          <p class="text-xs text-slate-500 mt-1">Sekali sahaja: masukkan baki semasa bagi item yang ada di klinik anda (biarkan kosong jika tiada). Selepas disimpan, baki awal dikunci dan hanya Pegawai Pelulus atau SuperAdmin boleh membukanya semula.</p>
         </div>
         <input type="search" id="klinik-setup-search" oninput="renderKlinikSetupList()" placeholder="Cari item (nama / kod)..." class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-purple-500">
         <div id="klinik-setup-cat-tabs" class="flex flex-wrap gap-1.5"></div>
@@ -842,6 +859,17 @@
         <p class="text-xs text-slate-500 -mt-1">Semak kuantiti yang benar-benar diterima, kemudian sahkan. Stok akan dimasukkan ke stor klinik.</p>
         <div id="klinik-receipts-list" class="space-y-3"></div>
         <div id="klinik-pindahan-masuk-list" class="space-y-3"></div>
+      </div>
+
+      <!-- Stok klinik hampir luput -->
+      <div id="klinik-expiry-card" class="hidden bg-white p-4 sm:p-5 rounded-3xl shadow-sm border-2 border-rose-200 space-y-2">
+        <h3 class="text-base font-extrabold text-slate-900"><i class="fa-solid fa-hourglass-half text-rose-600 mr-1"></i> Stok Hampir Luput (≤ 6 bulan)</h3>
+        <p class="text-xs text-slate-500 -mt-1">Guna stok ini dahulu. Stok yang tidak dapat dihabiskan boleh dipindahkan ke klinik lain atau dipulangkan ke stor daerah.</p>
+        <div class="overflow-x-auto max-h-60 overflow-y-auto border border-slate-200 rounded-xl">
+          <table class="w-full text-left border-collapse text-xs">
+            <tbody id="klinik-expiry-body" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Stok klinik & rekod keluar -->
@@ -1718,7 +1746,7 @@
       <div class="space-y-3 text-xs">
         <div>
           <label class="block font-bold text-slate-700 mb-1">Nama Penuh <span class="text-rose-500">*</span></label>
-          <input type="text" id="modal-approver-nama" placeholder="Cth: Dr. Noraini Binti Ahmad" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
+          <input type="text" id="modal-approver-nama" placeholder="Cth: DR. NORAINI BINTI AHMAD" class="uppercase w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
         </div>
         <div>
           <label class="block font-bold text-slate-700 mb-1">Jawatan <span class="text-rose-500">*</span></label>
@@ -1752,7 +1780,7 @@
           <select id="modal-approver-role" onchange="onApproverRoleChange()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-medium">
             <option value="pemohon">Pemohon (mohon stok sahaja)</option>
             <option value="pelulus">Pegawai Pelulus (luluskan &amp; urus stok)</option>
-            <option value="penjaga_daerah">Penjaga Stor Daerah (urus stok, tidak meluluskan)</option>
+            <option value="penjaga_daerah">Pegawai Stor (urus stok, tidak meluluskan)</option>
           </select>
         </div>
         <div id="modal-approver-cats-wrap">
@@ -1899,6 +1927,20 @@
             <datalist id="modal-item-unit-klinik-list"></datalist>
           </div>
           <p id="modal-item-unit-klinik-note" class="text-[11px] font-semibold"></p>
+        </div>
+
+        <div class="bg-rose-50/60 border border-rose-200 rounded-xl p-3 space-y-2">
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" id="modal-item-luput" class="mt-0.5 w-4 h-4 rounded text-rose-600">
+            <span>
+              <span class="block text-xs font-extrabold text-slate-800">Item bertarikh luput</span>
+              <span class="block text-[11px] text-slate-600">Tarikh luput wajib diisi semasa Sah Terima (BTB). Stok dikeluarkan ikut MDKD (luput terawal dahulu) dan disenaraikan dalam KEW.PS-6.</span>
+            </span>
+          </label>
+          <div id="modal-item-batch-list" class="text-[11px]"></div>
+          <label class="block text-[11px] font-bold text-slate-700">Lokasi Stok <span class="font-medium text-slate-500">(pilihan, cth: Rak A2 / Kabinet 3)</span>
+            <input type="text" id="modal-item-lokasi" maxlength="60" class="mt-1 w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-medium focus:ring-2 focus:ring-purple-500">
+          </label>
         </div>
 
         <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
